@@ -7,21 +7,17 @@ BYTE_CHUNK = 4096
 
 # Contains the common functionality between the strong and weak client, defines a template method for the variable parts.
 class ClientTemplate():
-    def __init__(self, my_ip, my_port, ip_to_conn, port_to_conn) -> None:
-        self.my_ip = my_ip
-        self.my_port = my_port
-        self.ip_to_conn = ip_to_conn
-        self.port_to_conn = port_to_conn
+    def __init__(self) -> None:
         self.client_model = ClientModel()
         self.event_dict = {}
         self.device = self.get_device()
 
-    def create_client_socket(self):
+    def create_client_socket(self, client_ip, client_port, server_ip, server_port):
         try:
             self.client_socket = socket.socket(family=socket.AF_INET, type=socket.SOCK_STREAM)
-            self.client_socket.bind((self.my_ip, self.my_port))
-            self.client_socket.connect((self.ip_to_conn, self.port_to_conn))
-            print(f'[+] Initialized socket at {(self.my_ip, self.my_port)} and connected with ({self.ip_to_conn}, {self.port_to_conn})')
+            self.client_socket.bind((client_ip, client_port))
+            self.client_socket.connect((server_ip, server_port))
+            print(f'[+] Initialized socket at {(client_ip, client_port)} and connected with ({self.ip_to_conn}, {self.port_to_conn})')
         except socket.error as error:
             print(f'Socket initialization failed with error:\n{error}')
             print(self.client_socket.close())
@@ -49,4 +45,10 @@ class ClientTemplate():
         # Implement different functionality
 
     def get_device(self):
-        return torch.device('cuda') if torch.cuda.is_available else torch.device('cpu')
+        return torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+    
+    def send_data_packet(self, payload, comm_socket):
+        try:
+            comm_socket.sendall(b'<START>' + pickle.dumps(payload) + b'<END>')
+        except socket.error as error:
+            print(f'Message sending failed with error:\n{error}')
