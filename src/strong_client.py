@@ -20,7 +20,7 @@ class StrongClient(ClientTemplate):
         self.client_port = client_port
         self.ip_to_conn = ip_to_conn
         self.port_to_conn = port_to_conn
-        self.clients_id_to_sock = []
+        self.clients_id_to_sock = {}
         self.server_port = server_port
         self.db = db
         torch.manual_seed(32)
@@ -46,9 +46,9 @@ class StrongClient(ClientTemplate):
             while True:
                 weak_client_socket, weak_client_address = self.server_socket.accept()
                 print(f"[+] Weak client {weak_client_address} connected")
+                client_id = self.handle_connections_from_serversocket(weak_client_socket, weak_client_address)
                 # Thread for establishing communication with the connected client
-                threading.Thread(target=self.listen_for_server_sock_messages, args=(weak_client_socket, )).start()
-                self.handle_connections_from_serversocket(weak_client_socket, weak_client_address)
+                threading.Thread(target=self.listen_for_server_sock_messages, args=(client_id, )).start()
         except socket.error as err:
             print(err)
             sys.exit(1)
@@ -57,44 +57,46 @@ class StrongClient(ClientTemplate):
         client_ip, client_port = weak_client_address
         query = """
         SELECT id
-        FROM clients
+        FROM weak_clients
         WHERE ip = ? AND port = ?
         """
         exists = self.db.execute_query(query=query, values=(client_ip, client_port), fetch_data_flag=True, fetch_all_flag=True)
         if len(exists) == 0:
             query = """
-            SELECT id FROM clients ORDER BY id DESC LIMIT 1;
+            SELECT id FROM weak_clients ORDER BY id DESC LIMIT 1;
             """
             last_id = self.db.execute_query(query=query, fetch_data_flag=True, fetch_all_flag=True)
             client_id = 1 if len(last_id) == 0 else last_id[0][0] + 1
             query = """
-            INSERT INTO clients (id, ip, port) VALUES (?, ?, ?)
+            INSERT INTO weak_clients (id, ip, port) VALUES (?, ?, ?)
             """
             self.db.execute_query(query=query, values=(client_id, client_ip, client_port))
         else:
             client_id = exists[0][0]
         self.clients_id_to_sock[client_id] = weak_client_socket
+        #print(self.clients_id_to_sock)
+        return client_id
         
 
-    def listen_for_server_sock_messages(self, weak_client_socket, weak_client_address):
+    def listen_for_server_sock_messages(self, client_id):
         data_packet = b''
         while True:
-            data_chunk = weak_client_socket.recv(BYTE_CHUNK)
+            data_chunk = self.clients_id_to_sock[client_id].recv(BYTE_CHUNK)
             data_packet += data_chunk
             if (b'<END>'in data_packet) and (b'<START>' in data_packet):
-                        threading.Thread(target=self.handle_server_sock_packet, args=(data_packet, weak_client_socket)).start()
+                        threading.Thread(target=self.handle_server_sock_packet, args=(data_packet, client_id)).start()
                         data_packet = b'' 
             if not data_chunk:
                 break
 
     
-    def handle_server_sock_packet(self, data_packet, weak_client_socket):
+    def handle_server_sock_packet(self, data_packet, client_id):
         data = pickle.loads(data_packet.split(b'<START>')[1].split(b'<END>')[0])
-        print(data)
-        self.send_data_packet('hi weak client', weak_client_socket)
-        """for header, payload in data:
-            # implement different functionality based on headers
-            pass"""
+        update_db_headers = ['labels', 'device', 'outputs', 'datasize']
+        for header, payload in data.items():
+            if header in update_db_headers:
+                query = f'UPDATE weak_clients SET {header} = ? WHERE id = ?'
+                self.db.execute_query(query=query, values=(payload, client_id))
 
     def handle_client_sock_packet(self, data_packet):
         data = pickle.loads(data_packet.split(b'<START>')[1].split(b'<END>')[0])
@@ -130,4 +132,4 @@ if __name__ == '__main__':
     # Thread for establishing communication with the server
     threading.Thread(target=strong_client.listen_for_client_sock_messages, args=()).start()
     strong_client.send_data_packet('hiiii server', strong_client.client_socket)
-    train_dl = strong_client.load_data(subset_path='subset_data/subset_0.pth', batch_size=8, shuffle=True, num_workers=2)
+    train_dl = strong_client.load_data(subset_path='subset_data/subset_0.pth', batch_size=32, shuffle=True, num_workers=2)

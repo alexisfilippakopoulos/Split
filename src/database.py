@@ -6,8 +6,6 @@ class Database():
         self.db_path = db_path
         self.create_db_schema(table_queries) 
     
-
-
     def create_db_schema(self, create_table_queries: dict):
         """
         Creates the database schema.
