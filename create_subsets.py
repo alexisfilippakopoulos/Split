@@ -20,11 +20,12 @@ def sort_dataset(data):
     for i in range(len(data)):
         class_to_indices[data.targets[i]].append(i)
 
-    subsets = {}
+    """subsets = {}
     for cl, idxs in class_to_indices.items():
         subsets[cl] = Subset(dataset=data, indices=idxs)
 
-    return subsets
+    return subsets"""
+    return class_to_indices
 
 def save_subsets(subsets: dict, folder):
     if not os.path.exists(folder):
@@ -38,5 +39,11 @@ if __name__ == '__main__':
 
     transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
     train_data, test_data = get_data(transform=transform)
-    subsets = sort_dataset(data=train_data)
-    save_subsets(subsets=subsets, folder='subset_data')
+    class_to_indices = sort_dataset(data=train_data)
+    l2 = class_to_indices[0]
+    l2.extend(class_to_indices[1])
+    l2.extend(class_to_indices[2])
+    sub = Subset(dataset=train_data, indices=l2)
+    print(len(sub.indices))
+    save(obj=sub, f=f'subset_data/subset_3_classes.pth')
+    #save_subsets(subsets=subsets, folder='subset_data')

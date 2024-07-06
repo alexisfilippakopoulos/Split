@@ -1,0 +1,3 @@
+Run client with cpu and gpu 
+Run 2 clients
+Implement server

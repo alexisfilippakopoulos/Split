@@ -10,6 +10,8 @@ import torch
 import os
 
 BYTE_CHUNK = 4096
+OUTPUTS_LABELS_RECVD = threading.Event()
+MODEL_LOCK = threading.Lock()
 
 class StrongClient(ClientTemplate):
     def __init__(self, ip, client_port, server_port, ip_to_conn, port_to_conn, db: Database) -> None:
@@ -26,7 +28,7 @@ class StrongClient(ClientTemplate):
         torch.manual_seed(32)
         self.client_model = StrongClientModel()
         torch.manual_seed(32)
-        self.offload_model = WeakClientOffloadedModel()
+        self.offloaded_model = WeakClientOffloadedModel()
 
     def create_server_socket(self):
         # Create a socket that is used for accepting connections and receiving data from weak clients
@@ -74,7 +76,8 @@ class StrongClient(ClientTemplate):
         else:
             client_id = exists[0][0]
         self.clients_id_to_sock[client_id] = weak_client_socket
-        #print(self.clients_id_to_sock)
+        query = "UPDATE weak_clients SET offloaded_weights = ? WHERE id = ?"
+        self.db.execute_query(query=query, values=(pickle.dumps(self.offloaded_model.state_dict()), client_id))
         return client_id
         
 
@@ -93,10 +96,22 @@ class StrongClient(ClientTemplate):
     def handle_server_sock_packet(self, data_packet, client_id):
         data = pickle.loads(data_packet.split(b'<START>')[1].split(b'<END>')[0])
         update_db_headers = ['labels', 'device', 'outputs', 'datasize']
-        for header, payload in data.items():
-            if header in update_db_headers:
-                query = f'UPDATE weak_clients SET {header} = ? WHERE id = ?'
-                self.db.execute_query(query=query, values=(payload, client_id))
+        headers = list(data.keys())
+        for header in headers:
+            payload = data[header]
+            if header == 'device':
+                payload = str(payload)
+
+            if header in ['outputs', 'labels']:
+                payload = pickle.dumps(payload)
+
+            query = f'UPDATE weak_clients SET {header} = ? WHERE id = ?'
+            self.db.execute_query(query=query, values=(payload, client_id))
+
+        if 'outputs' in headers and 'labels' in headers:
+            with MODEL_LOCK:
+                threading.Thread(target=self.train_offloaded_models(client_id))
+
 
     def handle_client_sock_packet(self, data_packet):
         data = pickle.loads(data_packet.split(b'<START>')[1].split(b'<END>')[0])
@@ -109,6 +124,42 @@ class StrongClient(ClientTemplate):
         raise NotImplementedError("Subclasses should implement this method")
         # Implement different functionality
 
+    def train_my_model(self):
+        pass
+
+    def train_offloaded_models(self, client_id):
+        # Fetch client's offloaded weights, outputs, labels and store them in a list
+        components = []
+        criterion = torch.nn.CrossEntropyLoss()
+    
+        for col in ['offloaded_weights', 'outputs', 'labels']:
+            query = f'SELECT {col} FROM weak_clients WHERE id = ?'
+            components.append(pickle.loads(self.db.execute_query(query=query, values=(client_id, ), fetch_data_flag=True)))
+        # Load specific client's offloaded weights
+        self.offloaded_model.load_state_dict(components[0])
+        self.offloaded_model.to(self.device)
+        self.offloaded_model.train()
+        
+        optimizer = torch.optim.SGD(params=self.offloaded_model.parameters(), lr=0.01)
+        optimizer.zero_grad()
+
+        components[1], components[2] = components[1].to(self.device), components[2].to(self.device)
+
+        # Perform the forward and backward pass
+        outputs = self.offloaded_model(components[1])
+        loss = criterion(outputs, components[2])
+        loss.backward()
+        print(loss.item())
+        optimizer.step()
+        # Transmit offload layer's gradients back to client
+        self.send_data_packet(payload={'grads': components[1].grad.clone().detach(), 'loss': loss.item()}, comm_socket=self.clients_id_to_sock[client_id])
+        #print('Updated and transmitted for client: ', client_id)
+        query = "UPDATE weak_clients SET offloaded_weights = ? WHERE id = ?"
+        self.db.execute_query(query=query, values=(pickle.dumps(self.offloaded_model.state_dict()), client_id))
+
+            
+        
+
 
 if __name__ == '__main__':
     table_queries = {
@@ -118,7 +169,11 @@ if __name__ == '__main__':
                         ip VARCHAR(50),
                         port INT,
                         datasize INT,
-                        device VARCHAR(50))
+                        device VARCHAR(50),
+                        outputs BLOB,
+                        labels BLOB,
+                        offloaded_weights BLOB,
+                        epoch_weights BLOB)
                         """,
     }
     db = Database(db_path='strong_client.db', table_queries=table_queries)
@@ -132,4 +187,5 @@ if __name__ == '__main__':
     # Thread for establishing communication with the server
     threading.Thread(target=strong_client.listen_for_client_sock_messages, args=()).start()
     strong_client.send_data_packet('hiiii server', strong_client.client_socket)
-    train_dl = strong_client.load_data(subset_path='subset_data/subset_0.pth', batch_size=32, shuffle=True, num_workers=2)
+
+    train_dl, datasize = strong_client.load_data(subset_path='subset_data/subset_0.pth', batch_size=32, shuffle=True, num_workers=2)
