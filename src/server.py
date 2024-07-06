@@ -64,7 +64,7 @@ if __name__ == '__main__':
                         device VARCHAR(50))
                         """,
     }
-    db = Database(db_path='server_db.db')
+    db = Database(db_path='server_db.db', table_queries=table_queries)
     server = Server(my_ip='localhost', my_port=10000, db=db)
     server.create_server_socket()
     threading.Thread(target=server.listen_for_connections, args=()).start()

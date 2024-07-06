@@ -1,5 +1,5 @@
-from client_model import ClientModel
 import torch
+from torch.utils.data import DataLoader
 import socket
 import pickle
 
@@ -8,7 +8,6 @@ BYTE_CHUNK = 4096
 # Contains the common functionality between the strong and weak client, defines a template method for the variable parts.
 class ClientTemplate():
     def __init__(self) -> None:
-        self.client_model = ClientModel()
         self.event_dict = {}
         self.device = self.get_device()
 
@@ -52,3 +51,7 @@ class ClientTemplate():
             comm_socket.sendall(b'<START>' + pickle.dumps(payload) + b'<END>')
         except socket.error as error:
             print(f'Message sending failed with error:\n{error}')
+
+    def load_data(self, subset_path, batch_size, shuffle, num_workers):
+        subset = torch.load(f=subset_path)
+        return DataLoader(subset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers, pin_memory=True)

@@ -1,10 +1,13 @@
 from client import ClientTemplate 
+from client_model import WeakClientOffloadedModel, StrongClientModel
 import pickle
 import socket
 import sys
 import threading
 import time
 from database import Database
+import torch
+import os
 
 BYTE_CHUNK = 4096
 
@@ -20,6 +23,10 @@ class StrongClient(ClientTemplate):
         self.clients_id_to_sock = []
         self.server_port = server_port
         self.db = db
+        torch.manual_seed(32)
+        self.client_model = StrongClientModel()
+        torch.manual_seed(32)
+        self.offload_model = WeakClientOffloadedModel()
 
     def create_server_socket(self):
         # Create a socket that is used for accepting connections and receiving data from weak clients
@@ -120,6 +127,7 @@ if __name__ == '__main__':
     threading.Thread(target=strong_client.listen_for_connections, args=()).start()
     # Create socket that connects with the server
     strong_client.create_client_socket(client_ip=strong_client.my_ip, client_port=strong_client.client_port, server_ip=strong_client.ip_to_conn, server_port=strong_client.port_to_conn)
-    #Thread for establishing communication with the server
+    # Thread for establishing communication with the server
     threading.Thread(target=strong_client.listen_for_client_sock_messages, args=()).start()
     strong_client.send_data_packet('hiiii server', strong_client.client_socket)
+    train_dl = strong_client.load_data(subset_path='subset_data/subset_0.pth', batch_size=8, shuffle=True, num_workers=2)
