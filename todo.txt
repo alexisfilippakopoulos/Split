@@ -12,4 +12,4 @@ python src/weak_client.py -ip=127.0.0.1 --ip2connect=127.0.0.1 --port2connect=69
 
 Test:
 1. strong cuda weak1 cuda weak2 cpu WORKS
-1. strong cpu weak1 cuda weak2 cuda
+1. strong cpu weak1 cuda weak2 cuda WORKS
