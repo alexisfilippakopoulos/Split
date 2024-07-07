@@ -1,6 +1,6 @@
 from client import ClientTemplate 
 import pickle
-import socket
+import pandas as pd
 import argparse
 import threading
 import time
@@ -46,7 +46,6 @@ class WeakClient(ClientTemplate):
         # Implement different functionality
 
     def train(self, epochs, train_dl, optimizer):
-        print(self.device)
         self.client_model.train()
         self.client_model.to(self.device)
         for e in range(epochs):
@@ -91,6 +90,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     weak_client = WeakClient(my_ip=args.ip, my_port=args.clientport, ip_to_conn=args.ip2connect, port_to_conn=args.port2connect)
     weak_client.device = torch.device(args.device) if args.device is not None else weak_client.device
+    print(f'[+] Using {weak_client.device} as device.')
     weak_client.create_client_socket(client_ip=weak_client.my_ip, client_port=weak_client.my_port, server_ip=weak_client.ip_to_conn, server_port=weak_client.port_to_conn)
     threading.Thread(target=weak_client.listen_for_client_sock_messages, args=()).start()
 

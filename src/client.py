@@ -2,6 +2,7 @@ import torch
 from torch.utils.data import DataLoader
 import socket
 import pickle
+import pandas as pd
 
 BYTE_CHUNK = 4096
 
@@ -10,6 +11,7 @@ class ClientTemplate():
     def __init__(self) -> None:
         self.event_dict = {}
         self.device = self.get_device()
+        self.epoch_stats_df = pd.DataFrame(columns=['epoch', 'train_loss', 'train_time'])
 
     def create_client_socket(self, client_ip, client_port, server_ip, server_port):
         try:

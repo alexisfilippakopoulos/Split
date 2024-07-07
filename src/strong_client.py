@@ -1,10 +1,10 @@
-from client import ClientTemplate 
+from client import ClientTemplate
 from client_model import WeakClientOffloadedModel, StrongClientModel
 import pickle
 import socket
 import sys
 import threading
-import time
+from copy import deepcopy
 from database import Database
 import torch
 import argparse
@@ -147,13 +147,14 @@ class StrongClient(ClientTemplate):
             query = "SELECT datasize FROM weak_clients WHERE id = ?"
             datasizes.append(self.db.execute_query(query=query, values=(client_id, ), fetch_data_flag=True))
 
-        weights.append(self.client_model.state_dict())
+        weights.append(deepcopy(self.client_model.state_dict()))
         datasizes.append(self.datasize)
         total_data = sum(datasizes)
         # Aggregate the global model
         avg_full_weights = {}
         for i in range(len(weights)):
             for layer, weight in weights[i].items():
+                weight = weight.to(self.device)
                 if layer not in avg_full_weights.keys():
                     avg_full_weights[layer] = weight * (datasizes[i] / total_data)
                 else:
@@ -170,6 +171,7 @@ class StrongClient(ClientTemplate):
 
         self.client_model.load_state_dict(avg_full_weights)
         self.client_updated_weigts.clear()
+        del weights
 
     def train_my_model(self, num_clients, epochs, lr, train_dl):
         optimizer = torch.optim.SGD(params=self.client_model.parameters(), lr=lr)
@@ -276,6 +278,7 @@ if __name__ == '__main__':
     db = Database(db_path='strong_client.db', table_queries=table_queries)
     strong_client = StrongClient(ip=args.ip, client_port=args.clientport, server_port=args.serverport, ip_to_conn=args.ip2connect, port_to_conn=args.port2connect, db=db)
     strong_client.device = torch.device(args.device) if args.device is not None else strong_client.device
+    print(f'[+] Using {strong_client.device} as device.')
     # Create socket that accepts connections from other clients and establishes communication
     strong_client.create_server_socket()
     # Thread for accepting incoming connections from clients
