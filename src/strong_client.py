@@ -25,7 +25,7 @@ class StrongClient(ClientTemplate):
         # Maps a client's id to its socket
         self.clients_id_to_sock = {}
         # Track clients who finished their epoch and transmitted their updated weights
-        self.client_updated_weigts = []
+        self.client_updated_weights = []
         torch.manual_seed(32)
         self.client_model = StrongClientModel()
         torch.manual_seed(32)
@@ -102,18 +102,21 @@ class StrongClient(ClientTemplate):
             if header == 'device':
                 payload = str(payload)
 
-            if header in ['outputs', 'labels', 'epoch_weights']:
+            elif header in ['outputs', 'labels']:
+                self.send_data_packet(payload={'id': client_id, 'batch' : [data['outputs'], data['labels']]}, comm_socket=self.client_socket)
                 payload = pickle.dumps(payload)
-                if header == 'epoch_weights':
+
+            elif header == 'epoch_weights':
+                    payload = pickle.dumps(payload)
                     print(f'[+] Received end of epoch weights from client {client_id}')
-                    self.client_updated_weigts.append(client_id)
+                    self.client_updated_weights.append(client_id)
+                    self.send_data_packet(payload={'final': client_id}, comm_socket=self.client_socket)
 
             query = f'UPDATE weak_clients SET {header} = ? WHERE id = ?'
             self.db.execute_query(query=query, values=(payload, client_id))
 
         if 'outputs' in headers and 'labels' in headers:
-            with MODEL_LOCK:
-                threading.Thread(target=self.train_offloaded_models(client_id))
+            threading.Thread(target=self.train_offloaded_models(client_id)).start()
 
 
     def handle_client_sock_packet(self, data_packet):
@@ -124,7 +127,7 @@ class StrongClient(ClientTemplate):
             pass"""
         
     def construct_weights_dicts(self):
-        for client_id in self.client_updated_weigts:
+        for client_id in self.client_updated_weights:
             # Fetch both dicts offloaded_weights and epoch_weights
             query = "SELECT offloaded_weights FROM weak_clients WHERE id = ?"
             offload_dict = pickle.loads(self.db.execute_query(query=query, values=(client_id, ), fetch_data_flag=True))
@@ -140,7 +143,7 @@ class StrongClient(ClientTemplate):
     def federated_averaging(self):
         weights = []
         datasizes = []
-        for client_id in self.client_updated_weigts:
+        for client_id in self.client_updated_weights:
             query = "SELECT epoch_weights FROM weak_clients WHERE id = ?"
             weights.append(pickle.loads(self.db.execute_query(query=query, values=(client_id, ), fetch_data_flag=True)))
 
@@ -165,12 +168,12 @@ class StrongClient(ClientTemplate):
             if layer not in self.offloaded_model.state_dict().keys():
                 avg_weak_weights[layer] = avg_full_weights[layer]
 
-        for client_id in self.client_updated_weigts:
+        for client_id in self.client_updated_weights:
             self.send_data_packet(payload={'avg_model': avg_weak_weights}, comm_socket=self.clients_id_to_sock[client_id])
             print(f"[+] Transmitted average model to client {client_id}")
 
         self.client_model.load_state_dict(avg_full_weights)
-        self.client_updated_weigts.clear()
+        self.client_updated_weights.clear()
         del weights
 
     def train_my_model(self, num_clients, epochs, lr, train_dl):
@@ -182,7 +185,7 @@ class StrongClient(ClientTemplate):
             avg_loss = self.train_my_model_one_epoch(optimizer=optimizer, criterion=criterion, train_dl=train_dl)
             print(f'\tAverage Training Loss: {avg_loss :.2f}')
             # wait for all client to transmit their updated end of epoch weights
-            while len(self.client_updated_weigts) < num_clients:
+            while len(self.client_updated_weights) < num_clients:
                 continue
             # Reconstruct weight dicts
             self.construct_weights_dicts()
@@ -205,41 +208,42 @@ class StrongClient(ClientTemplate):
         
 
     def train_offloaded_models(self, client_id):
-        # Fetch client's offloaded weights, outputs, labels and store them in a list
-        components = {}
-        criterion = torch.nn.CrossEntropyLoss()
-    
-        for col in ['offloaded_weights', 'outputs', 'labels']:
-            query = f'SELECT {col} FROM weak_clients WHERE id = ?'
-            components[col] = (pickle.loads(self.db.execute_query(query=query, values=(client_id, ), fetch_data_flag=True)))
+        with MODEL_LOCK:
+            # Fetch client's offloaded weights, outputs, labels and store them in a list
+            components = {}
+            criterion = torch.nn.CrossEntropyLoss()
         
-        query = f'SELECT device FROM weak_clients WHERE id = ?'
-        components['device'] = self.db.execute_query(query=query, values=(client_id, ), fetch_data_flag=True)
+            for col in ['offloaded_weights', 'outputs', 'labels']:
+                query = f'SELECT {col} FROM weak_clients WHERE id = ?'
+                components[col] = (pickle.loads(self.db.execute_query(query=query, values=(client_id, ), fetch_data_flag=True)))
+            
+            query = f'SELECT device FROM weak_clients WHERE id = ?'
+            components['device'] = self.db.execute_query(query=query, values=(client_id, ), fetch_data_flag=True)
 
-        # Load specific client's offloaded weights
-        #print(self.device)
-        self.offloaded_model.load_state_dict(components['offloaded_weights'])
-        self.offloaded_model.to(self.device)
-        self.offloaded_model.train()
-        
-        optimizer = torch.optim.SGD(params=self.offloaded_model.parameters(), lr=0.01)
-        optimizer.zero_grad()
+            # Load specific client's offloaded weights
+            #print(self.device)
+            self.offloaded_model.load_state_dict(components['offloaded_weights'])
+            self.offloaded_model.to(self.device)
+            self.offloaded_model.train()
+            
+            optimizer = torch.optim.SGD(params=self.offloaded_model.parameters(), lr=0.01)
+            optimizer.zero_grad()
 
-        components['outputs'], components['labels'] = components['outputs'].to(self.device), components['labels'].to(self.device)
+            components['outputs'], components['labels'] = components['outputs'].to(self.device), components['labels'].to(self.device)
 
-        components['outputs'].retain_grad() if components['device'] != self.device else None
+            components['outputs'].retain_grad() if components['device'] != self.device else None
 
-        # Perform the forward and backward pass
-        outputs = self.offloaded_model(components['outputs'])
-        loss = criterion(outputs, components['labels'])
-        loss.backward()
-        #print(loss.item())
-        optimizer.step()
-        # Transmit offload layer's gradients back to client
-        self.send_data_packet(payload={'grads': components['outputs'].grad.clone().detach().to(components['device']), 'loss': loss.item()}, comm_socket=self.clients_id_to_sock[client_id])
-        #print('Updated and transmitted for client: ', client_id)
-        query = "UPDATE weak_clients SET offloaded_weights = ? WHERE id = ?"
-        self.db.execute_query(query=query, values=(pickle.dumps(self.offloaded_model.state_dict()), client_id))
+            # Perform the forward and backward pass
+            outputs = self.offloaded_model(components['outputs'])
+            loss = criterion(outputs, components['labels'])
+            loss.backward()
+            #print(loss.item())
+            optimizer.step()
+            # Transmit offload layer's gradients back to client
+            self.send_data_packet(payload={'grads': components['outputs'].grad.clone().detach().to(components['device']), 'loss': loss.item()}, comm_socket=self.clients_id_to_sock[client_id])
+            #print('Updated and transmitted for client: ', client_id)
+            query = "UPDATE weak_clients SET offloaded_weights = ? WHERE id = ?"
+            self.db.execute_query(query=query, values=(pickle.dumps(self.offloaded_model.state_dict()), client_id))
 
             
 def create_parser():
@@ -287,7 +291,6 @@ if __name__ == '__main__':
     strong_client.create_client_socket(client_ip=strong_client.my_ip, client_port=strong_client.client_port, server_ip=strong_client.ip_to_conn, server_port=strong_client.port_to_conn)
     # Thread for establishing communication with the server
     threading.Thread(target=strong_client.listen_for_client_sock_messages, args=()).start()
-    strong_client.send_data_packet('hiiii server', strong_client.client_socket)
     train_dl = strong_client.load_data(subset_path=args.datapath, batch_size=32, shuffle=True, num_workers=2)
     threading.Thread(target=strong_client.train_my_model, args=(args.num_clients, args.epochs, args.learningrate, train_dl)).start()
     
