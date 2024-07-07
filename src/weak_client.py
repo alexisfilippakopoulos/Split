@@ -41,6 +41,7 @@ class WeakClient(ClientTemplate):
         # Implement different functionality
 
     def train(self, epochs, train_dl, optimizer):
+        print(self.device)
         self.client_model.train()
         self.client_model.to(self.device)
         for i in range(epochs):
@@ -71,6 +72,7 @@ if __name__ == '__main__':
     weak_client.create_client_socket(client_ip=weak_client.my_ip, client_port=weak_client.my_port, server_ip=weak_client.ip_to_conn, server_port=weak_client.port_to_conn)
     threading.Thread(target=weak_client.listen_for_client_sock_messages, args=()).start()
 
+    #weak_client.device = torch.device('cpu')
     train_dl, datasize = weak_client.load_data(subset_path='subset_data/subset_3_classes.pth', batch_size=32, shuffle=True, num_workers=2)
     weak_client.send_data_packet(payload={'device': weak_client.device, 'datasize': datasize}, comm_socket=weak_client.client_socket)
 

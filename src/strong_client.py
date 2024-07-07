@@ -129,30 +129,37 @@ class StrongClient(ClientTemplate):
 
     def train_offloaded_models(self, client_id):
         # Fetch client's offloaded weights, outputs, labels and store them in a list
-        components = []
+        components = {}
         criterion = torch.nn.CrossEntropyLoss()
     
         for col in ['offloaded_weights', 'outputs', 'labels']:
             query = f'SELECT {col} FROM weak_clients WHERE id = ?'
-            components.append(pickle.loads(self.db.execute_query(query=query, values=(client_id, ), fetch_data_flag=True)))
+            components[col] = (pickle.loads(self.db.execute_query(query=query, values=(client_id, ), fetch_data_flag=True)))
+        
+        query = f'SELECT device FROM weak_clients WHERE id = ?'
+        components['device'] = self.db.execute_query(query=query, values=(client_id, ), fetch_data_flag=True)
+
         # Load specific client's offloaded weights
-        self.offloaded_model.load_state_dict(components[0])
+        #print(self.device)
+        self.offloaded_model.load_state_dict(components['offloaded_weights'])
         self.offloaded_model.to(self.device)
         self.offloaded_model.train()
         
         optimizer = torch.optim.SGD(params=self.offloaded_model.parameters(), lr=0.01)
         optimizer.zero_grad()
 
-        components[1], components[2] = components[1].to(self.device), components[2].to(self.device)
+        components['outputs'], components['labels'] = components['outputs'].to(self.device), components['labels'].to(self.device)
+
+        components['outputs'].retain_grad() if components['device'] != self.device else None
 
         # Perform the forward and backward pass
-        outputs = self.offloaded_model(components[1])
-        loss = criterion(outputs, components[2])
+        outputs = self.offloaded_model(components['outputs'])
+        loss = criterion(outputs, components['labels'])
         loss.backward()
-        print(loss.item())
+        #print(loss.item())
         optimizer.step()
         # Transmit offload layer's gradients back to client
-        self.send_data_packet(payload={'grads': components[1].grad.clone().detach(), 'loss': loss.item()}, comm_socket=self.clients_id_to_sock[client_id])
+        self.send_data_packet(payload={'grads': components['outputs'].grad.clone().detach().to(components['device']), 'loss': loss.item()}, comm_socket=self.clients_id_to_sock[client_id])
         #print('Updated and transmitted for client: ', client_id)
         query = "UPDATE weak_clients SET offloaded_weights = ? WHERE id = ?"
         self.db.execute_query(query=query, values=(pickle.dumps(self.offloaded_model.state_dict()), client_id))
@@ -178,6 +185,7 @@ if __name__ == '__main__':
     }
     db = Database(db_path='strong_client.db', table_queries=table_queries)
     strong_client = StrongClient(ip='localhost', client_port=9999, server_port=6969, ip_to_conn='localhost', port_to_conn=10000, db=db)
+    #strong_client.device = torch.device('cpu')
     # Create socket that accepts connections from other clients and establishes communication
     strong_client.create_server_socket()
     # Thread for accepting incoming connections from clients
