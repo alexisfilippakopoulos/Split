@@ -54,4 +54,5 @@ class ClientTemplate():
 
     def load_data(self, subset_path, batch_size, shuffle, num_workers):
         subset = torch.load(f=subset_path)
-        return DataLoader(subset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers, pin_memory=True), len(subset.indices)
+        self.datasize = len(subset.indices)
+        return DataLoader(subset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers, pin_memory=True)

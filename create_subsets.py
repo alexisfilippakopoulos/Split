@@ -20,12 +20,15 @@ def sort_dataset(data):
     for i in range(len(data)):
         class_to_indices[data.targets[i]].append(i)
 
-    """subsets = {}
-    for cl, idxs in class_to_indices.items():
-        subsets[cl] = Subset(dataset=data, indices=idxs)
-
-    return subsets"""
     return class_to_indices
+
+def create_subset(data, class_to_indices, classes, path):
+    l = []
+    for cl in classes:
+        l.extend(class_to_indices[cl])
+    sub = Subset(dataset=data, indices=l)
+    print(len(sub.indices))
+    save(obj=sub, f=path)
 
 def save_subsets(subsets: dict, folder):
     if not os.path.exists(folder):
@@ -40,10 +43,7 @@ if __name__ == '__main__':
     transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
     train_data, test_data = get_data(transform=transform)
     class_to_indices = sort_dataset(data=train_data)
-    l2 = class_to_indices[0]
-    l2.extend(class_to_indices[1])
-    l2.extend(class_to_indices[2])
-    sub = Subset(dataset=train_data, indices=l2)
-    print(len(sub.indices))
-    save(obj=sub, f=f'subset_data/subset_3_classes.pth')
+    create_subset(data=train_data, class_to_indices=class_to_indices, classes=[0, 1], path='subset_data/sub_01.pth')
+    create_subset(data=train_data, class_to_indices=class_to_indices, classes=[2, 3], path='subset_data/sub_23.pth')
+    create_subset(data=train_data, class_to_indices=class_to_indices, classes=[4, 5], path='subset_data/sub_45.pth')
     #save_subsets(subsets=subsets, folder='subset_data')

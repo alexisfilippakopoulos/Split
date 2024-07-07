@@ -10,6 +10,7 @@ import torch
 BYTE_CHUNK = 4096
 # Threading Events for asynchronous execution
 GRADS_RECVD = threading.Event()
+AVG_MODEL_RECVD = threading.Event()
 
 class WeakClient(ClientTemplate):
     def __init__(self, my_ip, my_port, ip_to_conn, port_to_conn) -> None:
@@ -32,6 +33,10 @@ class WeakClient(ClientTemplate):
                 self.grads = data[header]
             elif header == 'loss':
                 self.curr_loss += data[header]
+            elif header == 'avg_model':
+                self.client_model.load_state_dict(data[header])
+                print(f"\t[+] Received and loaded average model")
+                AVG_MODEL_RECVD.set()
         if 'grads' in headers:
             GRADS_RECVD.set()
 
@@ -44,8 +49,8 @@ class WeakClient(ClientTemplate):
         print(self.device)
         self.client_model.train()
         self.client_model.to(self.device)
-        for i in range(epochs):
-            print(f"[+] Epoch {i + 1} started")
+        for e in range(epochs):
+            print(f"[+] Epoch {e + 1} started")
             for i, (inputs, labels) in enumerate(train_dl):
                 inputs, labels = inputs.to(self.device) , labels.to(self.device)
                 optimizer.zero_grad()
@@ -56,13 +61,16 @@ class WeakClient(ClientTemplate):
 
                 GRADS_RECVD.wait()
                 GRADS_RECVD.clear()
-                #print(self.grads.shape)
-                outputs.backward(self.grads)
 
+                outputs.backward(self.grads)
                 optimizer.step()
-                #print('Updated weights')
+            
+            self.send_data_packet(payload={'epoch_weights': self.client_model.state_dict()}, comm_socket=self.client_socket)
             print(f'\tAverage Training Loss: {(self.curr_loss / len(train_dl)) :.2f}')
             self.curr_loss = 0
+            AVG_MODEL_RECVD.wait()
+            AVG_MODEL_RECVD.clear()
+
 
 def create_parser():
     parser = argparse.ArgumentParser()
@@ -87,8 +95,8 @@ if __name__ == '__main__':
     threading.Thread(target=weak_client.listen_for_client_sock_messages, args=()).start()
 
     #weak_client.device = torch.device('cpu')
-    train_dl, datasize = weak_client.load_data(subset_path=args.datapath, batch_size=args.batchsize, shuffle=True, num_workers=2)
-    weak_client.send_data_packet(payload={'device': weak_client.device, 'datasize': datasize}, comm_socket=weak_client.client_socket)
+    train_dl = weak_client.load_data(subset_path=args.datapath, batch_size=args.batchsize, shuffle=True, num_workers=2)
+    weak_client.send_data_packet(payload={'device': weak_client.device, 'datasize': weak_client.datasize}, comm_socket=weak_client.client_socket)
 
     optimizer = torch.optim.SGD(params=weak_client.client_model.parameters(), lr=args.learningrate)
     

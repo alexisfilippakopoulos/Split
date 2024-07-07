@@ -16,14 +16,16 @@ MODEL_LOCK = threading.Lock()
 class StrongClient(ClientTemplate):
     def __init__(self, ip, client_port, server_port, ip_to_conn, port_to_conn, db: Database) -> None:
         super().__init__()
-        # dict: weak_client_socket -> weak_client_address. Client address is used as a key in other dicts.
         self.my_ip = ip
         self.client_port = client_port
         self.ip_to_conn = ip_to_conn
         self.port_to_conn = port_to_conn
-        self.clients_id_to_sock = {}
         self.server_port = server_port
         self.db = db
+        # Maps a client's id to its socket
+        self.clients_id_to_sock = {}
+        # Track clients who finished their epoch and transmitted their updated weights
+        self.client_updated_weigts = []
         torch.manual_seed(32)
         self.client_model = StrongClientModel()
         torch.manual_seed(32)
@@ -94,15 +96,17 @@ class StrongClient(ClientTemplate):
     
     def handle_server_sock_packet(self, data_packet, client_id):
         data = pickle.loads(data_packet.split(b'<START>')[1].split(b'<END>')[0])
-        update_db_headers = ['labels', 'device', 'outputs', 'datasize']
         headers = list(data.keys())
         for header in headers:
             payload = data[header]
             if header == 'device':
                 payload = str(payload)
 
-            if header in ['outputs', 'labels']:
+            if header in ['outputs', 'labels', 'epoch_weights']:
                 payload = pickle.dumps(payload)
+                if header == 'epoch_weights':
+                    print(f'[+] Received end of epoch weights from client {client_id}')
+                    self.client_updated_weigts.append(client_id)
 
             query = f'UPDATE weak_clients SET {header} = ? WHERE id = ?'
             self.db.execute_query(query=query, values=(payload, client_id))
@@ -118,8 +122,56 @@ class StrongClient(ClientTemplate):
         """for header, payload in data:
             # implement different functionality based on headers
             pass"""
+        
+    def construct_weights_dicts(self):
+        for client_id in self.client_updated_weigts:
+            # Fetch both dicts offloaded_weights and epoch_weights
+            query = "SELECT offloaded_weights FROM weak_clients WHERE id = ?"
+            offload_dict = pickle.loads(self.db.execute_query(query=query, values=(client_id, ), fetch_data_flag=True))
+            query = "SELECT epoch_weights FROM weak_clients WHERE id = ?"
+            weak_model_dict = pickle.loads(self.db.execute_query(query=query, values=(client_id, ), fetch_data_flag=True))
+            for layer, weights in offload_dict.items():
+                weak_model_dict[layer] = weights
+            # Save the full dict on epoch_weights
+            query = "UPDATE weak_clients SET epoch_weights = ? WHERE id = ?"
+            self.db.execute_query(query=query, values=(pickle.dumps(weak_model_dict), client_id))
+        print("[+] Constructed all weak clients' weight dict")
 
-    def train_my_model(self, epochs, lr, train_dl):
+    def federated_averaging(self):
+        weights = []
+        datasizes = []
+        for client_id in self.client_updated_weigts:
+            query = "SELECT epoch_weights FROM weak_clients WHERE id = ?"
+            weights.append(pickle.loads(self.db.execute_query(query=query, values=(client_id, ), fetch_data_flag=True)))
+
+            query = "SELECT datasize FROM weak_clients WHERE id = ?"
+            datasizes.append(self.db.execute_query(query=query, values=(client_id, ), fetch_data_flag=True))
+
+        weights.append(self.client_model.state_dict())
+        datasizes.append(self.datasize)
+        total_data = sum(datasizes)
+        # Aggregate the global model
+        avg_full_weights = {}
+        for i in range(len(weights)):
+            for layer, weight in weights[i].items():
+                if layer not in avg_full_weights.keys():
+                    avg_full_weights[layer] = weight * (datasizes[i] / total_data)
+                else:
+                    avg_full_weights[layer] += weight * (datasizes[i] / total_data)
+        # Create a state dict with the layers of the weak client model
+        avg_weak_weights = {}
+        for layer in avg_full_weights.keys():
+            if layer not in self.offloaded_model.state_dict().keys():
+                avg_weak_weights[layer] = avg_full_weights[layer]
+
+        for client_id in self.client_updated_weigts:
+            self.send_data_packet(payload={'avg_model': avg_weak_weights}, comm_socket=self.clients_id_to_sock[client_id])
+            print(f"[+] Transmitted average model to client {client_id}")
+
+        self.client_model.load_state_dict(avg_full_weights)
+        self.client_updated_weigts.clear()
+
+    def train_my_model(self, num_clients, epochs, lr, train_dl):
         optimizer = torch.optim.SGD(params=self.client_model.parameters(), lr=lr)
         criterion = torch.nn.CrossEntropyLoss()
         self.client_model.to(self.device)
@@ -127,6 +179,14 @@ class StrongClient(ClientTemplate):
             print(f'[+] Epoch {e + 1}')
             avg_loss = self.train_my_model_one_epoch(optimizer=optimizer, criterion=criterion, train_dl=train_dl)
             print(f'\tAverage Training Loss: {avg_loss :.2f}')
+            # wait for all client to transmit their updated end of epoch weights
+            while len(self.client_updated_weigts) < num_clients:
+                continue
+            # Reconstruct weight dicts
+            self.construct_weights_dicts()
+            # Perform the aggregation
+            self.federated_averaging()
+
 
     def train_my_model_one_epoch(self, optimizer, criterion, train_dl):
         self.client_model.train()
@@ -191,7 +251,8 @@ def create_parser():
     parser.add_argument('-data', '--datapath', help='path to a data subset', type=str)
     parser.add_argument('-bs', '--batchsize', help='size of batch', type=int) 
     parser.add_argument('-e', '--epochs', help='number of epochs', type=int)
-    parser.add_argument('-lr', '--learningrate', help='learning rate', type=float)  
+    parser.add_argument('-lr', '--learningrate', help='learning rate', type=float)
+    parser.add_argument('-numcl', '--num_clients', help='number of clients that will be served', type=int)   
     return parser    
 
 
@@ -224,7 +285,6 @@ if __name__ == '__main__':
     # Thread for establishing communication with the server
     threading.Thread(target=strong_client.listen_for_client_sock_messages, args=()).start()
     strong_client.send_data_packet('hiiii server', strong_client.client_socket)
-
-    train_dl, datasize = strong_client.load_data(subset_path=args.datapath, batch_size=32, shuffle=True, num_workers=2)
-    threading.Thread(target=strong_client.train_my_model, args=(args.epochs, args.learningrate, train_dl)).start()
+    train_dl = strong_client.load_data(subset_path=args.datapath, batch_size=32, shuffle=True, num_workers=2)
+    threading.Thread(target=strong_client.train_my_model, args=(args.num_clients, args.epochs, args.learningrate, train_dl)).start()
     
