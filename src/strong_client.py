@@ -7,7 +7,7 @@ import threading
 import time
 from database import Database
 import torch
-import os
+import argparse
 
 BYTE_CHUNK = 4096
 OUTPUTS_LABELS_RECVD = threading.Event()
@@ -16,7 +16,6 @@ MODEL_LOCK = threading.Lock()
 class StrongClient(ClientTemplate):
     def __init__(self, ip, client_port, server_port, ip_to_conn, port_to_conn, db: Database) -> None:
         super().__init__()
-        print(self.device)
         # dict: weak_client_socket -> weak_client_address. Client address is used as a key in other dicts.
         self.my_ip = ip
         self.client_port = client_port
@@ -120,12 +119,28 @@ class StrongClient(ClientTemplate):
             # implement different functionality based on headers
             pass"""
 
-    def train_one_epoch():
-        raise NotImplementedError("Subclasses should implement this method")
-        # Implement different functionality
+    def train_my_model(self, epochs, lr, train_dl):
+        optimizer = torch.optim.SGD(params=self.client_model.parameters(), lr=lr)
+        criterion = torch.nn.CrossEntropyLoss()
+        self.client_model.to(self.device)
+        for e in range(epochs):
+            print(f'[+] Epoch {e + 1}')
+            avg_loss = self.train_my_model_one_epoch(optimizer=optimizer, criterion=criterion, train_dl=train_dl)
+            print(f'\tAverage Training Loss: {avg_loss :.2f}')
 
-    def train_my_model(self):
-        pass
+    def train_my_model_one_epoch(self, optimizer, criterion, train_dl):
+        self.client_model.train()
+        curr_loss = 0.
+        for i, (inputs, labels) in enumerate(train_dl):
+            optimizer.zero_grad()
+            inputs, labels = inputs.to(self.device) , labels.to(self.device)
+            outputs = self.client_model(inputs)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            curr_loss += loss.item()
+        return curr_loss / len(train_dl)
+        
 
     def train_offloaded_models(self, client_id):
         # Fetch client's offloaded weights, outputs, labels and store them in a list
@@ -165,10 +180,24 @@ class StrongClient(ClientTemplate):
         self.db.execute_query(query=query, values=(pickle.dumps(self.offloaded_model.state_dict()), client_id))
 
             
-        
+def create_parser():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-ip', '--ip', default='127.0.0.1', help='ip of current machine', type=str)
+    parser.add_argument('-cp', '--clientport', help='port to connect with the server', type=int)       
+    parser.add_argument('-sp', '--serverport', help='port to accept connections from clients', type=int)  
+    parser.add_argument('-ip2con', '--ip2connect', default='127.0.0.1', help='ip of server', type=str)
+    parser.add_argument('-p2con', '--port2connect', help='server port that accepts connections', type=int) 
+    parser.add_argument('-d', '--device', default=None, help='available device to be used', type=str)  
+    parser.add_argument('-data', '--datapath', help='path to a data subset', type=str)
+    parser.add_argument('-bs', '--batchsize', help='size of batch', type=int) 
+    parser.add_argument('-e', '--epochs', help='number of epochs', type=int)
+    parser.add_argument('-lr', '--learningrate', help='learning rate', type=float)  
+    return parser    
 
 
 if __name__ == '__main__':
+    parser = create_parser()
+    args = parser.parse_args()
     table_queries = {
         'weak_clients' : """
                         CREATE TABLE weak_clients(
@@ -184,8 +213,8 @@ if __name__ == '__main__':
                         """,
     }
     db = Database(db_path='strong_client.db', table_queries=table_queries)
-    strong_client = StrongClient(ip='localhost', client_port=9999, server_port=6969, ip_to_conn='localhost', port_to_conn=10000, db=db)
-    #strong_client.device = torch.device('cpu')
+    strong_client = StrongClient(ip=args.ip, client_port=args.clientport, server_port=args.serverport, ip_to_conn=args.ip2connect, port_to_conn=args.port2connect, db=db)
+    strong_client.device = torch.device(args.device) if args.device is not None else strong_client.device
     # Create socket that accepts connections from other clients and establishes communication
     strong_client.create_server_socket()
     # Thread for accepting incoming connections from clients
@@ -196,4 +225,6 @@ if __name__ == '__main__':
     threading.Thread(target=strong_client.listen_for_client_sock_messages, args=()).start()
     strong_client.send_data_packet('hiiii server', strong_client.client_socket)
 
-    train_dl, datasize = strong_client.load_data(subset_path='subset_data/subset_0.pth', batch_size=32, shuffle=True, num_workers=2)
+    train_dl, datasize = strong_client.load_data(subset_path=args.datapath, batch_size=32, shuffle=True, num_workers=2)
+    threading.Thread(target=strong_client.train_my_model, args=(args.epochs, args.learningrate, train_dl)).start()
+    

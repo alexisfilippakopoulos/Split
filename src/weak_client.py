@@ -1,7 +1,7 @@
 from client import ClientTemplate 
 import pickle
 import socket
-import sys
+import argparse
 import threading
 import time
 from client_model import WeakClientModel
@@ -61,21 +61,35 @@ class WeakClient(ClientTemplate):
 
                 optimizer.step()
                 #print('Updated weights')
-            print('Average Loss:', self.curr_loss / len(train_dl))
+            print(f'\tAverage Training Loss: {(self.curr_loss / len(train_dl)) :.2f}')
             self.curr_loss = 0
 
-
+def create_parser():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-ip', '--ip', default='127.0.0.1', help='ip of current machine', type=str)
+    parser.add_argument('-cp', '--clientport', help='port to connect with the strong client', type=int)       
+    parser.add_argument('-ip2con', '--ip2connect', default='127.0.0.1', help='ip of server', type=str)
+    parser.add_argument('-p2con', '--port2connect', help='strong client port that accepts connections', type=int) 
+    parser.add_argument('-d', '--device', default=None, help='available device to be used', type=str)  
+    parser.add_argument('-data', '--datapath', help='path to a data subset', type=str)
+    parser.add_argument('-bs', '--batchsize', help='size of batch', type=int) 
+    parser.add_argument('-e', '--epochs', help='number of epochs', type=int)
+    parser.add_argument('-lr', '--learningrate', help='learning rate', type=float)  
+    return parser   
 
 
 if __name__ == '__main__':
-    weak_client = WeakClient(my_ip='localhost', my_port=9998, ip_to_conn='localhost', port_to_conn=6969)
+    parser = create_parser()
+    args = parser.parse_args()
+    weak_client = WeakClient(my_ip=args.ip, my_port=args.clientport, ip_to_conn=args.ip2connect, port_to_conn=args.port2connect)
+    weak_client.device = torch.device(args.device) if args.device is not None else weak_client.device
     weak_client.create_client_socket(client_ip=weak_client.my_ip, client_port=weak_client.my_port, server_ip=weak_client.ip_to_conn, server_port=weak_client.port_to_conn)
     threading.Thread(target=weak_client.listen_for_client_sock_messages, args=()).start()
 
     #weak_client.device = torch.device('cpu')
-    train_dl, datasize = weak_client.load_data(subset_path='subset_data/subset_3_classes.pth', batch_size=32, shuffle=True, num_workers=2)
+    train_dl, datasize = weak_client.load_data(subset_path=args.datapath, batch_size=args.batchsize, shuffle=True, num_workers=2)
     weak_client.send_data_packet(payload={'device': weak_client.device, 'datasize': datasize}, comm_socket=weak_client.client_socket)
 
-    optimizer = torch.optim.SGD(params=weak_client.client_model.parameters(), lr=0.01)
+    optimizer = torch.optim.SGD(params=weak_client.client_model.parameters(), lr=args.learningrate)
     
-    weak_client.train(epochs=20, train_dl=train_dl, optimizer=optimizer)
+    weak_client.train(epochs=args.epochs, train_dl=train_dl, optimizer=optimizer)

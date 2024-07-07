@@ -5,9 +5,6 @@ Implement server
 
 
 
+python src/strong_client.py -ip=127.0.0.1 --clientport=9999 --serverport=6969 --ip2connect=127.0.0.1 --port2connect=10000 --device=cuda --datapath=subset_data/subset_0.pth
 
-requires_grad=True
-
-AAAAAAA
-
-grad_fn=<ToCopyBackward0>
+python src/weak_client.py -ip=127.0.0.1 --ip2connect=127.0.0.1 --port2connect=6969 --device=cuda --datapath=subset_data/subset_1.pth --batchsize=32 --epochs=20 --learningrate=0.01
