@@ -60,9 +60,10 @@ class WeakClient(ClientTemplate):
 
                 GRADS_RECVD.wait()
                 GRADS_RECVD.clear()
-
+                #print(self.grads)
                 outputs.backward(self.grads)
                 optimizer.step()
+                #print('took a step')
             
             self.send_data_packet(payload={'epoch_weights': self.client_model.state_dict()}, comm_socket=self.client_socket)
             print(f'\tAverage Training Loss: {(self.curr_loss / len(train_dl)) :.2f}')

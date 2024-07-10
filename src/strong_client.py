@@ -30,6 +30,9 @@ class StrongClient(ClientTemplate):
         self.client_model = StrongClientModel()
         torch.manual_seed(32)
         self.offloaded_model = WeakClientOffloadedModel()
+        self.client_losses = {}
+        self.client_outputs = {}
+        self.client_off_outputs = {}
 
     def create_server_socket(self):
         # Create a socket that is used for accepting connections and receiving data from weak clients
@@ -113,7 +116,7 @@ class StrongClient(ClientTemplate):
 
         if 'outputs' in headers and 'labels' in headers:
             with MODEL_LOCK:
-                threading.Thread(target=self.train_offloaded_models(client_id))
+                threading.Thread(target=self.forward_pass_offloaded_models(client_id))
 
 
     def handle_client_sock_packet(self, data_packet):
@@ -174,13 +177,12 @@ class StrongClient(ClientTemplate):
         del weights
 
     def train_my_model(self, num_clients, epochs, lr, train_dl):
-        optimizer = torch.optim.SGD(params=self.client_model.parameters(), lr=lr)
         criterion = torch.nn.CrossEntropyLoss()
         self.client_model.to(self.device)
         for e in range(epochs):
             print(f'[+] Epoch {e + 1}')
-            avg_loss = self.train_my_model_one_epoch(optimizer=optimizer, criterion=criterion, train_dl=train_dl)
-            print(f'\tAverage Training Loss: {avg_loss :.2f}')
+            my_loss = self.train_my_model_one_epoch(criterion=criterion, train_dl=train_dl, num_clients=num_clients)
+            
             # wait for all client to transmit their updated end of epoch weights
             while len(self.client_updated_weigts) < num_clients:
                 continue
@@ -190,21 +192,80 @@ class StrongClient(ClientTemplate):
             self.federated_averaging()
 
 
-    def train_my_model_one_epoch(self, optimizer, criterion, train_dl):
+    def train_my_model_one_epoch(self, criterion, train_dl, num_clients):
         self.client_model.train()
-        curr_loss = 0.
         for i, (inputs, labels) in enumerate(train_dl):
-            optimizer.zero_grad()
-            inputs, labels = inputs.to(self.device) , labels.to(self.device)
+            inputs, labels = inputs.to(self.device), labels.to(self.device)
             outputs = self.client_model(inputs)
+            outputs.requires_grad_(True)
+            outputs.retain_grad()
+            #print(outputs.requires_grad)
             loss = criterion(outputs, labels)
-            loss.backward()
-            optimizer.step()
-            curr_loss += loss.item()
-        return curr_loss / len(train_dl)
-        
+            #self.client_losses.append(loss.detach().cpu().numpy())
+            self.client_losses[-1] = loss
+            self.client_off_outputs[-1] = outputs
+            while len(self.client_losses) < (num_clients + 1):
+                continue
+            self.update_models()
 
-    def train_offloaded_models(self, client_id):
+    def update_models(self):
+        """for cid, outputs in self.client_outputs.items():
+            print(f'CLIENT ID {cid}')
+            avg_loss = torch.stack(self.client_losses).mean()
+            if cid == -1:
+                optimizer = torch.optim.SGD(self.client_model.parameters(), lr=0.01)
+            else:
+                query = 'SELECT offloaded_weights FROM weak_clients WHERE id = ?'
+                weight_dict = pickle.loads(self.db.execute_query(query=query, values=(cid, ), fetch_data_flag=True))
+                query = f'SELECT device FROM weak_clients WHERE id = ?'
+                device = self.db.execute_query(query=query, values=(cid, ), fetch_data_flag=True)
+                self.offloaded_model.load_state_dict(weight_dict)
+                optimizer = torch.optim.SGD(self.offloaded_model.parameters(), lr=0.01)
+            optimizer.zero_grad()
+            avg_loss.backward()
+            optimizer.step()
+            if cid != -1:
+                print('Transmitted grads')
+                self.send_data_packet(payload={'grads': outputs.grad.clone().detach().to(device)}, comm_socket=self.clients_id_to_sock[cid])
+        self.client_losses.clear()
+        self.client_outputs = {}
+        print('OUTPUTS', self.client_outputs)"""
+        avg_loss = torch.stack(list(self.client_losses.values())).mean()
+        print(self.client_losses[-1].item(), self.client_losses[1].item())
+        #print(avg_loss.item())
+        avg_loss.backward(retain_graph=True)
+        for cid, outputs in self.client_off_outputs.items():
+            if cid == -1:
+                optimizer = torch.optim.SGD(self.client_model.parameters(), lr=0.01)
+                optimizer.zero_grad()
+                #print(outputs.grad)
+                new_outs = outputs.clone().detach().requires_grad_(True)
+                new_outs.backward(outputs.grad)
+                optimizer.step()
+            else:
+                new_outs = outputs.clone().detach().requires_grad_(True)
+                # GRADS OF SIZE 32, 10
+                #print(outputs.grad)
+                #output_grads = outputs.grad.clone()
+                #print(output_grads.shape)
+                query = 'SELECT offloaded_weights FROM weak_clients WHERE id = ?'
+                weight_dict = pickle.loads(self.db.execute_query(query=query, values=(cid, ), fetch_data_flag=True))
+                query = f'SELECT device FROM weak_clients WHERE id = ?'
+                device = self.db.execute_query(query=query, values=(cid, ), fetch_data_flag=True)
+                self.offloaded_model.load_state_dict(weight_dict)
+                optimizer = torch.optim.SGD(self.offloaded_model.parameters(), lr=0.01)
+                optimizer.zero_grad()
+                new_outs.backward(outputs.grad)
+                optimizer.step()
+                #print('Transmitted grads')
+                self.send_data_packet(payload={'grads': self.client_outputs[cid].grad.clone().detach().to(device)}, comm_socket=self.clients_id_to_sock[cid])
+
+        self.client_losses.clear()
+        self.client_off_outputs = {}
+        self.client_outputs = {}
+        #print('OUTPUTS', self.client_outputs)
+
+    def forward_pass_offloaded_models(self, client_id):
         # Fetch client's offloaded weights, outputs, labels and store them in a list
         components = {}
         criterion = torch.nn.CrossEntropyLoss()
@@ -221,25 +282,28 @@ class StrongClient(ClientTemplate):
         self.offloaded_model.load_state_dict(components['offloaded_weights'])
         self.offloaded_model.to(self.device)
         self.offloaded_model.train()
-        
-        optimizer = torch.optim.SGD(params=self.offloaded_model.parameters(), lr=0.01)
-        optimizer.zero_grad()
 
         components['outputs'], components['labels'] = components['outputs'].to(self.device), components['labels'].to(self.device)
 
         components['outputs'].retain_grad() if components['device'] != self.device else None
-
         # Perform the forward and backward pass
         outputs = self.offloaded_model(components['outputs'])
         loss = criterion(outputs, components['labels'])
-        loss.backward()
+        #self.client_losses.append(loss.detach().cpu().numpy())
+        self.client_losses[client_id] = loss
+        components['outputs'].retain_grad()
+        outputs.retain_grad()
+        self.client_outputs[client_id] = components['outputs']
+        self.client_off_outputs[client_id] = outputs
+
+        '''loss.backward()
         #print(loss.item())
         optimizer.step()
         # Transmit offload layer's gradients back to client
         self.send_data_packet(payload={'grads': components['outputs'].grad.clone().detach().to(components['device']), 'loss': loss.item()}, comm_socket=self.clients_id_to_sock[client_id])
         #print('Updated and transmitted for client: ', client_id)
         query = "UPDATE weak_clients SET offloaded_weights = ? WHERE id = ?"
-        self.db.execute_query(query=query, values=(pickle.dumps(self.offloaded_model.state_dict()), client_id))
+        self.db.execute_query(query=query, values=(pickle.dumps(self.offloaded_model.state_dict()), client_id))'''
 
             
 def create_parser():
@@ -271,6 +335,7 @@ if __name__ == '__main__':
                         device VARCHAR(50),
                         outputs BLOB,
                         labels BLOB,
+                        loss BLOB,
                         offloaded_weights BLOB,
                         epoch_weights BLOB)
                         """,
