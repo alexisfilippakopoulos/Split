@@ -8,6 +8,7 @@ from copy import deepcopy
 from database import Database
 import torch
 import argparse
+torch.autograd.set_detect_anomaly(True)
 
 BYTE_CHUNK = 4096
 OUTPUTS_LABELS_RECVD = threading.Event()
@@ -30,6 +31,7 @@ class StrongClient(ClientTemplate):
         self.client_model = StrongClientModel()
         torch.manual_seed(32)
         self.offloaded_model = WeakClientOffloadedModel()
+        self.optimizer = torch.optim.SGD(self.client_model.parameters(), lr=0.01)
         self.client_losses = {}
         self.client_outputs = {}
         self.client_off_outputs = {}
@@ -182,7 +184,6 @@ class StrongClient(ClientTemplate):
         for e in range(epochs):
             print(f'[+] Epoch {e + 1}')
             my_loss = self.train_my_model_one_epoch(criterion=criterion, train_dl=train_dl, num_clients=num_clients)
-            
             # wait for all client to transmit their updated end of epoch weights
             while len(self.client_updated_weigts) < num_clients:
                 continue
@@ -195,18 +196,19 @@ class StrongClient(ClientTemplate):
     def train_my_model_one_epoch(self, criterion, train_dl, num_clients):
         self.client_model.train()
         for i, (inputs, labels) in enumerate(train_dl):
+            self.optimizer.zero_grad()
             inputs, labels = inputs.to(self.device), labels.to(self.device)
             outputs = self.client_model(inputs)
-            outputs.requires_grad_(True)
-            outputs.retain_grad()
-            #print(outputs.requires_grad)
+            #print('req', outputs.requires_grad)
             loss = criterion(outputs, labels)
+            #outputs.retain_grad()
             #self.client_losses.append(loss.detach().cpu().numpy())
             self.client_losses[-1] = loss
             self.client_off_outputs[-1] = outputs
             while len(self.client_losses) < (num_clients + 1):
                 continue
             self.update_models()
+            del outputs
 
     def update_models(self):
         """for cid, outputs in self.client_outputs.items():
@@ -230,24 +232,17 @@ class StrongClient(ClientTemplate):
         self.client_losses.clear()
         self.client_outputs = {}
         print('OUTPUTS', self.client_outputs)"""
+        print('bikaa')
         avg_loss = torch.stack(list(self.client_losses.values())).mean()
-        print(self.client_losses[-1].item(), self.client_losses[1].item())
+        #print(self.client_losses[-1].item(), self.client_losses[1].item(), self.client_losses[2].item())
+        #print(self.client_losses[-1].item(), self.client_losses[1].item())
         #print(avg_loss.item())
         avg_loss.backward(retain_graph=True)
         for cid, outputs in self.client_off_outputs.items():
             if cid == -1:
-                optimizer = torch.optim.SGD(self.client_model.parameters(), lr=0.01)
-                optimizer.zero_grad()
-                #print(outputs.grad)
-                new_outs = outputs.clone().detach().requires_grad_(True)
-                new_outs.backward(outputs.grad)
-                optimizer.step()
+                self.optimizer.step()
             else:
                 new_outs = outputs.clone().detach().requires_grad_(True)
-                # GRADS OF SIZE 32, 10
-                #print(outputs.grad)
-                #output_grads = outputs.grad.clone()
-                #print(output_grads.shape)
                 query = 'SELECT offloaded_weights FROM weak_clients WHERE id = ?'
                 weight_dict = pickle.loads(self.db.execute_query(query=query, values=(cid, ), fetch_data_flag=True))
                 query = f'SELECT device FROM weak_clients WHERE id = ?'
@@ -255,10 +250,15 @@ class StrongClient(ClientTemplate):
                 self.offloaded_model.load_state_dict(weight_dict)
                 optimizer = torch.optim.SGD(self.offloaded_model.parameters(), lr=0.01)
                 optimizer.zero_grad()
-                new_outs.backward(outputs.grad)
+                new_outs.backward(outputs.grad.clone())
                 optimizer.step()
-                #print('Transmitted grads')
+                #print(outputs.grad.shape)
+                outputs.retain_grad()
+                new_outs.retain_grad()
+                print(self.client_outputs[cid].grad)
+                print('Transmitted grads')
                 self.send_data_packet(payload={'grads': self.client_outputs[cid].grad.clone().detach().to(device)}, comm_socket=self.clients_id_to_sock[cid])
+                #self.send_data_packet(payload={'grads': outputs.grad.clone().detach().to(device)}, comm_socket=self.clients_id_to_sock[cid])
 
         self.client_losses.clear()
         self.client_off_outputs = {}
@@ -284,17 +284,20 @@ class StrongClient(ClientTemplate):
         self.offloaded_model.train()
 
         components['outputs'], components['labels'] = components['outputs'].to(self.device), components['labels'].to(self.device)
-
-        components['outputs'].retain_grad() if components['device'] != self.device else None
+        #components['outputs'] = components['outputs'].clone().detach().requires_grad_(True)
+        #components['outputs'].retain_grad() if components['device'] != self.device else None
         # Perform the forward and backward pass
         outputs = self.offloaded_model(components['outputs'])
-        loss = criterion(outputs, components['labels'])
         #self.client_losses.append(loss.detach().cpu().numpy())
-        self.client_losses[client_id] = loss
+        #print(components['outputs'].requires_grad_())
         components['outputs'].retain_grad()
         outputs.retain_grad()
+        outputs = outputs.clone().detach().requires_grad_(True)
+        #self.client_outputs[client_id] = components['outputs'].clone().detach().requires_grad_(True)
         self.client_outputs[client_id] = components['outputs']
         self.client_off_outputs[client_id] = outputs
+        loss = criterion(outputs, components['labels'])
+        self.client_losses[client_id] = loss
 
         '''loss.backward()
         #print(loss.item())
