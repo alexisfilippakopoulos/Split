@@ -12,6 +12,7 @@ torch.autograd.set_detect_anomaly(True)
 
 BYTE_CHUNK = 4096
 OUTPUTS_LABELS_RECVD = threading.Event()
+SERVER_OK = threading.Event()
 MODEL_LOCK = threading.Lock()
 
 class StrongClient(ClientTemplate):
@@ -36,6 +37,7 @@ class StrongClient(ClientTemplate):
         self.client_outputs = {}
         self.client_off_outputs = {}
         self.client_labels = {}
+        SERVER_OK.set()
 
     def create_server_socket(self):
         # Create a socket that is used for accepting connections and receiving data from weak clients
@@ -124,7 +126,8 @@ class StrongClient(ClientTemplate):
 
     def handle_client_sock_packet(self, data_packet):
         data = pickle.loads(data_packet.split(b'<START>')[1].split(b'<END>')[0])
-        print(data)
+        if data == b'<OK>':
+            SERVER_OK.set()
         """for header, payload in data:
             # implement different functionality based on headers
             pass"""
@@ -188,6 +191,7 @@ class StrongClient(ClientTemplate):
             # wait for all client to transmit their updated end of epoch weights
             while len(self.client_updated_weigts) < num_clients:
                 continue
+            self.send_data(data=b"<AVG>", comm_socket=self.client_socket)
             # Reconstruct weight dicts
             self.construct_weights_dicts()
             # Perform the aggregation
@@ -210,6 +214,10 @@ class StrongClient(ClientTemplate):
             self.client_labels[-1] = labels
             while len(self.client_losses) < (num_clients + 1):
                 continue
+            #print(f'Transmitted features to client server')
+            SERVER_OK.wait()
+            SERVER_OK.clear()
+            self.send_data_packet(payload={'inputs': self.client_outputs, 'labels': self.client_labels}, comm_socket=self.client_socket)
             self.update_models()
             del outputs
 
@@ -237,13 +245,11 @@ class StrongClient(ClientTemplate):
                 outputs.retain_grad()
                 new_outs.retain_grad()
                 #print(self.client_outputs[cid].grad)
-                print(f'Transmitted grads to client {cid}')
+                #print(f'Transmitted grads to client {cid}')
                 self.send_data_packet(payload={'grads': self.client_outputs[cid].grad.clone().detach().to(device)}, comm_socket=self.clients_id_to_sock[cid])
                 #self.send_data_packet(payload={'grads': outputs.grad.clone().detach().to(device)}, comm_socket=self.clients_id_to_sock[cid])
 
         self.client_losses.clear()
-        print(f'Transmitted features to client server')
-        self.send_data_packet(payload={'inputs': self.client_outputs, 'labels': self.client_labels}, comm_socket=self.client_socket)
         self.client_off_outputs = {}
         self.client_outputs = {}
         self.client_labels = {}

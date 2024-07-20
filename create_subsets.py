@@ -39,7 +39,8 @@ def save_subsets(subsets: dict, folder):
 
 
 if __name__ == '__main__':
-
+    if not os.path.exists('subset_data'):
+        os.makedirs('subset_data')
     transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
     train_data, test_data = get_data(transform=transform)
     class_to_indices = sort_dataset(data=train_data)

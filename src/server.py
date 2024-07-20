@@ -20,6 +20,7 @@ class Server():
         self.client_labels = {}
         torch.manual_seed(32)
         self.server_model = ServerModel()
+        self.strong_clients = []
 
 
     def create_server_socket(self):
@@ -32,6 +33,7 @@ class Server():
         while True:
             client_socket, client_address = self.server_socket.accept()
             print(f"[+] Client {client_address} connected")
+            self.strong_clients.append(client_socket)
             threading.Thread(target=self.listen_for_messages, args=(client_socket, client_address)).start()
 
     def handle_connections(self):
@@ -53,13 +55,16 @@ class Server():
 
     def handle_data_packet(self, data_packet, client_socket):
         data = pickle.loads(data_packet.split(b'<START>')[1].split(b'<END>')[0])
-        headers = list(data.keys())
-        if 'inputs' in headers:
-            self.client_outputs = data['inputs']
-            self.client_labels = data['labels']
-            print(self.client_outputs.keys())
-            print(self.client_labels.keys())
-            self.update_models()
+        if data.__class__ == dict:
+            headers = list(data.keys())
+            if 'inputs' in headers:
+                self.client_outputs = data['inputs']
+                self.client_labels = data['labels']
+                self.update_models()
+        else:
+            if data == b"<AVG>" and len(self.client_outputs) == 0:
+                self.federated_averaging()
+
             
 
     def send_data(self, data, comm_socket):
@@ -67,6 +72,7 @@ class Server():
 
     def update_models(self):
         criterion = torch.nn.CrossEntropyLoss()
+        losses = {}
         for cid in self.client_outputs.keys():
             # Load approprate weights
             query = 'SELECT model_weights FROM clients WHERE id = ?'
@@ -81,15 +87,21 @@ class Server():
             # Backward pass
             loss = criterion(outputs, self.client_labels[cid])
             loss.backward()
-            print(f'Client {cid} Loss: {loss.item()}')
+            losses[cid] = loss.item()
+            #print(f'Client {cid} Loss: {loss.item()}')
             # update
             optimizer.step()
-            print(f'Updated with client {cid} model instance')
+            #print(f'Updated with client {cid} model instance')
             # store weights
             query = 'UPDATE clients SET model_weights = ? WHERE id = ?'
-            self.db.execute_query(query=query, values=(pickle.dumps(self.server_model.state_dict(), cid)))
+            self.db.execute_query(query=query, values=(pickle.dumps(self.server_model.state_dict()), cid))
+        print(losses)
         self.client_labels = {}
         self.client_outputs = {}
+        self.send_data(data=b'<OK>', comm_socket=self.strong_clients[0])
+
+    def federated_averaging(self):
+        pass
 
 
 def create_parser():
