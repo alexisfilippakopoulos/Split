@@ -2,9 +2,10 @@ import socket
 import threading
 import pickle
 import sys
-import sqlite3
+import argparse
 import torch
 from database import Database
+from server_model import ServerModel
 
 
 BYTE_CHUNK = 4096
@@ -15,6 +16,11 @@ class Server():
         self.server_port = my_port
         self.db = db
         self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+        self.client_outputs = {}
+        self.client_labels = {}
+        torch.manual_seed(32)
+        self.server_model = ServerModel()
+
 
     def create_server_socket(self):
         self.server_socket = socket.socket(family=socket.AF_INET, type=socket.SOCK_STREAM)
@@ -40,7 +46,6 @@ class Server():
             data_chunk = client_socket.recv(BYTE_CHUNK)
             data_packet += data_chunk
             if (b'<END>'in data_packet) and (b'<START>' in data_packet):
-                        print('aaa')
                         threading.Thread(target=self.handle_data_packet, args=(data_packet, client_socket)).start()
                         data_packet = b'' 
             if not data_chunk:
@@ -48,24 +53,80 @@ class Server():
 
     def handle_data_packet(self, data_packet, client_socket):
         data = pickle.loads(data_packet.split(b'<START>')[1].split(b'<END>')[0])
-        print(data)
+        headers = list(data.keys())
+        if 'inputs' in headers:
+            self.client_outputs = data['inputs']
+            self.client_labels = data['labels']
+            print(self.client_outputs.keys())
+            print(self.client_labels.keys())
+            self.update_models()
+            
 
     def send_data(self, data, comm_socket):
         comm_socket.sendall(b'<START>' + pickle.dumps(data) + b'<END>')
 
+    def update_models(self):
+        criterion = torch.nn.CrossEntropyLoss()
+        for cid in self.client_outputs.keys():
+            # Load approprate weights
+            query = 'SELECT model_weights FROM clients WHERE id = ?'
+            weights = pickle.loads(self.db.execute_query(query, (cid,), fetch_data_flag=True))
+            self.server_model.load_state_dict(weights)
+            self.server_model.to(self.device)
+            self.server_model.train()
+            # Forward pass
+            optimizer = torch.optim.SGD(params=self.server_model.parameters(), lr=0.01)
+            optimizer.zero_grad()
+            outputs = self.server_model(self.client_outputs[cid])
+            # Backward pass
+            loss = criterion(outputs, self.client_labels[cid])
+            loss.backward()
+            print(f'Client {cid} Loss: {loss.item()}')
+            # update
+            optimizer.step()
+            print(f'Updated with client {cid} model instance')
+            # store weights
+            query = 'UPDATE clients SET model_weights = ? WHERE id = ?'
+            self.db.execute_query(query=query, values=(pickle.dumps(self.server_model.state_dict(), cid)))
+        self.client_labels = {}
+        self.client_outputs = {}
+
+
+def create_parser():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-ip', '--ip', default='127.0.0.1', help='ip of current machine', type=str)     
+    parser.add_argument('-sp', '--serverport', help='port to accept connections from clients', type=int)  
+    parser.add_argument('-d', '--device', default=None, help='available device to be used', type=str)  
+    parser.add_argument('-e', '--epochs', help='number of epochs', type=int)
+    parser.add_argument('-lr', '--learningrate', help='learning rate', type=float)
+    parser.add_argument('-numcl', '--num_clients', help='number of clients that will be served', type=int)   
+    return parser    
+
 if __name__ == '__main__':
+    parser = create_parser()
+    args = parser.parse_args()
     table_queries = {
-        'weak_clients' : """
-                        CREATE TABLE weak_clients(
+        'clients' : """
+                        CREATE TABLE clients(
                         id INT PRIMARY KEY,
-                        ip VARCHAR(50),
-                        port INT,
                         datasize INT,
-                        device VARCHAR(50))
+                        model_weights BLOB,
+                        outputs BLOB,
+                        labels BLOB)
                         """,
     }
     db = Database(db_path='server_db.db', table_queries=table_queries)
     server = Server(my_ip='localhost', my_port=10000, db=db)
+    query = """
+    INSERT INTO clients (id, datasize, model_weights, outputs, labels)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+        model_weights = ?
+    """
+    db.execute_query(query=query, values=(-1, None, pickle.dumps(server.server_model.state_dict()), None, None, pickle.dumps(server.server_model.state_dict())))
+    for i in range(1, args.num_clients):
+        print(i)
+        db.execute_query(query=query, values=(i, None, pickle.dumps(server.server_model.state_dict()), None, None, pickle.dumps(server.server_model.state_dict())))
     server.create_server_socket()
     threading.Thread(target=server.listen_for_connections, args=()).start()
     

@@ -56,7 +56,7 @@ class WeakClient(ClientTemplate):
                 outputs = self.client_model(inputs)
                 weak_client_outputs = outputs.clone().detach().requires_grad_(True)
 
-                self.send_data_packet(payload={'outputs': weak_client_outputs, 'labels': labels}, comm_socket=self.client_socket)
+                self.send_data_packet(payload={'outputs': weak_client_outputs.requires_grad_(True), 'labels': labels}, comm_socket=self.client_socket)
 
                 GRADS_RECVD.wait()
                 GRADS_RECVD.clear()

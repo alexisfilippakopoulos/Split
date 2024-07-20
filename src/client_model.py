@@ -43,9 +43,9 @@ class StrongClientModel(nn.Module):
         x = self.relu(self.conv1(x))
         x = self.pool(self.relu(self.conv2(x)))
         x = self.relu(self.conv3(x))
-        x = self.pool(self.relu(self.conv4(x)))
-        x = self.fc1(flatten(x, 1))
-        return x
+        x_off = self.pool(self.relu(self.conv4(x)))
+        x = self.fc1(flatten(x_off, 1))
+        return x, x_off
     
 
 """def count_parameters(model: nn.Module) -> int:

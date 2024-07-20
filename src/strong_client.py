@@ -35,6 +35,7 @@ class StrongClient(ClientTemplate):
         self.client_losses = {}
         self.client_outputs = {}
         self.client_off_outputs = {}
+        self.client_labels = {}
 
     def create_server_socket(self):
         # Create a socket that is used for accepting connections and receiving data from weak clients
@@ -198,44 +199,24 @@ class StrongClient(ClientTemplate):
         for i, (inputs, labels) in enumerate(train_dl):
             self.optimizer.zero_grad()
             inputs, labels = inputs.to(self.device), labels.to(self.device)
-            outputs = self.client_model(inputs)
+            outputs, server_inputs = self.client_model(inputs)
             #print('req', outputs.requires_grad)
             loss = criterion(outputs, labels)
             #outputs.retain_grad()
             #self.client_losses.append(loss.detach().cpu().numpy())
             self.client_losses[-1] = loss
             self.client_off_outputs[-1] = outputs
+            self.client_outputs[-1] = server_inputs
+            self.client_labels[-1] = labels
             while len(self.client_losses) < (num_clients + 1):
                 continue
             self.update_models()
             del outputs
 
     def update_models(self):
-        """for cid, outputs in self.client_outputs.items():
-            print(f'CLIENT ID {cid}')
-            avg_loss = torch.stack(self.client_losses).mean()
-            if cid == -1:
-                optimizer = torch.optim.SGD(self.client_model.parameters(), lr=0.01)
-            else:
-                query = 'SELECT offloaded_weights FROM weak_clients WHERE id = ?'
-                weight_dict = pickle.loads(self.db.execute_query(query=query, values=(cid, ), fetch_data_flag=True))
-                query = f'SELECT device FROM weak_clients WHERE id = ?'
-                device = self.db.execute_query(query=query, values=(cid, ), fetch_data_flag=True)
-                self.offloaded_model.load_state_dict(weight_dict)
-                optimizer = torch.optim.SGD(self.offloaded_model.parameters(), lr=0.01)
-            optimizer.zero_grad()
-            avg_loss.backward()
-            optimizer.step()
-            if cid != -1:
-                print('Transmitted grads')
-                self.send_data_packet(payload={'grads': outputs.grad.clone().detach().to(device)}, comm_socket=self.clients_id_to_sock[cid])
-        self.client_losses.clear()
-        self.client_outputs = {}
-        print('OUTPUTS', self.client_outputs)"""
-        print('bikaa')
         avg_loss = torch.stack(list(self.client_losses.values())).mean()
         #print(self.client_losses[-1].item(), self.client_losses[1].item(), self.client_losses[2].item())
-        #print(self.client_losses[-1].item(), self.client_losses[1].item())
+        print(self.client_losses[-1].item(), self.client_losses[1].item())
         #print(avg_loss.item())
         avg_loss.backward(retain_graph=True)
         for cid, outputs in self.client_off_outputs.items():
@@ -255,14 +236,17 @@ class StrongClient(ClientTemplate):
                 #print(outputs.grad.shape)
                 outputs.retain_grad()
                 new_outs.retain_grad()
-                print(self.client_outputs[cid].grad)
-                print('Transmitted grads')
+                #print(self.client_outputs[cid].grad)
+                print(f'Transmitted grads to client {cid}')
                 self.send_data_packet(payload={'grads': self.client_outputs[cid].grad.clone().detach().to(device)}, comm_socket=self.clients_id_to_sock[cid])
                 #self.send_data_packet(payload={'grads': outputs.grad.clone().detach().to(device)}, comm_socket=self.clients_id_to_sock[cid])
 
         self.client_losses.clear()
+        print(f'Transmitted features to client server')
+        self.send_data_packet(payload={'inputs': self.client_outputs, 'labels': self.client_labels}, comm_socket=self.client_socket)
         self.client_off_outputs = {}
         self.client_outputs = {}
+        self.client_labels = {}
         #print('OUTPUTS', self.client_outputs)
 
     def forward_pass_offloaded_models(self, client_id):
@@ -292,21 +276,13 @@ class StrongClient(ClientTemplate):
         #print(components['outputs'].requires_grad_())
         components['outputs'].retain_grad()
         outputs.retain_grad()
-        outputs = outputs.clone().detach().requires_grad_(True)
+        #outputs = outputs.clone().detach().requires_grad_(True)
         #self.client_outputs[client_id] = components['outputs'].clone().detach().requires_grad_(True)
         self.client_outputs[client_id] = components['outputs']
         self.client_off_outputs[client_id] = outputs
         loss = criterion(outputs, components['labels'])
         self.client_losses[client_id] = loss
-
-        '''loss.backward()
-        #print(loss.item())
-        optimizer.step()
-        # Transmit offload layer's gradients back to client
-        self.send_data_packet(payload={'grads': components['outputs'].grad.clone().detach().to(components['device']), 'loss': loss.item()}, comm_socket=self.clients_id_to_sock[client_id])
-        #print('Updated and transmitted for client: ', client_id)
-        query = "UPDATE weak_clients SET offloaded_weights = ? WHERE id = ?"
-        self.db.execute_query(query=query, values=(pickle.dumps(self.offloaded_model.state_dict()), client_id))'''
+        self.client_labels[client_id] = components['labels']
 
             
 def create_parser():
@@ -355,7 +331,7 @@ if __name__ == '__main__':
     strong_client.create_client_socket(client_ip=strong_client.my_ip, client_port=strong_client.client_port, server_ip=strong_client.ip_to_conn, server_port=strong_client.port_to_conn)
     # Thread for establishing communication with the server
     threading.Thread(target=strong_client.listen_for_client_sock_messages, args=()).start()
-    strong_client.send_data_packet('hiiii server', strong_client.client_socket)
+    #strong_client.send_data_packet('hiiii server', strong_client.client_socket)
     train_dl = strong_client.load_data(subset_path=args.datapath, batch_size=32, shuffle=True, num_workers=2)
     threading.Thread(target=strong_client.train_my_model, args=(args.num_clients, args.epochs, args.learningrate, train_dl)).start()
     
