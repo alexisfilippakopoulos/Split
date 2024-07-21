@@ -17,6 +17,6 @@ Test:
 
 python src/server.py --ip=127.0.0.1 --serverport=10000 --device=cpu --epochs=20 --learningrate=0.01 --num_clients=2
 
-python src/strong_client.py --ip=127.0.0.1 --clientport=9999 --serverport=6969 --ip2connect=127.0.0.1 --port2connect=10000 --device=cpu --datapath=subset_data/sub_01.pth --batchsize=32 --epochs=20 --learningrate=0.01 --num_clients=1
+python src/strong_client.py --ip=127.0.0.1 --clientport=9999 --serverport=6969 --ip2connect=127.0.0.1 --port2connect=10000 --device=cpu --datapath=subset_data/sub_1.pth --batchsize=32 --epochs=20 --learningrate=0.01 --num_clients=1
 
-python src/weak_client.py --ip=127.0.0.1 --clientport=9998 --ip2connect=127.0.0.1 --port2connect=6969 --device=cpu --datapath=subset_data/sub_23.pth --batchsize=32 --epochs=20 --learningrate=0.01
+python src/weak_client.py --ip=127.0.0.1 --clientport=9998 --ip2connect=127.0.0.1 --port2connect=6969 --device=cpu --datapath=subset_data/sub_0.pth --batchsize=32 --epochs=20 --learningrate=0.01

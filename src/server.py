@@ -21,6 +21,7 @@ class Server():
         torch.manual_seed(32)
         self.server_model = ServerModel()
         self.strong_clients = []
+        self.ids_to_datasize = {}
 
 
     def create_server_socket(self):
@@ -61,8 +62,9 @@ class Server():
                 self.client_outputs = data['inputs']
                 self.client_labels = data['labels']
                 self.update_models()
-        else:
-            if data == b"<AVG>" and len(self.client_outputs) == 0:
+            elif 'datasizes' in headers:
+                self.ids_to_datasize = dict(zip(data['ids'], data['datasizes']))
+                print(self.ids_to_datasize)
                 self.federated_averaging()
 
             
@@ -101,9 +103,27 @@ class Server():
         self.send_data(data=b'<OK>', comm_socket=self.strong_clients[0])
 
     def federated_averaging(self):
-        pass
+        weights = []
+        datasizes = []
+        for cid, datasize in self.ids_to_datasize.items():
+            query = 'SELECT model_weights FROM clients WHERE id = ?'
+            weights.append(self.db.execute_query(query=query, values=(cid, ), fetch_data_flag=True))
+            datasizes.append(datasize)
+        total_data = sum(datasizes)
+        avg_weights = {}
+        for i in range(len(weights)):
+            weight_dict = pickle.loads(weights[i])
+            for layer, params in weight_dict.items():
+                if layer not in avg_weights.keys():
+                    avg_weights[layer] = params * (datasizes[i] / total_data)
+                else:
+                    avg_weights[layer] += params * (datasizes[i] / total_data)
 
-
+        for cid in self.ids_to_datasize.keys():
+            query = 'UPDATE clients SET model_weights = ? WHERE id = ?'
+            self.db.execute_query(query=query, values=(pickle.dumps(avg_weights), cid))
+        print('[+] Aggregated Global Model')
+        self.send_data(data=b'<CONTINUE>', comm_socket=self.strong_clients[0])
 def create_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument('-ip', '--ip', default='127.0.0.1', help='ip of current machine', type=str)     
@@ -137,7 +157,6 @@ if __name__ == '__main__':
     """
     db.execute_query(query=query, values=(-1, None, pickle.dumps(server.server_model.state_dict()), None, None, pickle.dumps(server.server_model.state_dict())))
     for i in range(1, args.num_clients):
-        print(i)
         db.execute_query(query=query, values=(i, None, pickle.dumps(server.server_model.state_dict()), None, None, pickle.dumps(server.server_model.state_dict())))
     server.create_server_socket()
     threading.Thread(target=server.listen_for_connections, args=()).start()

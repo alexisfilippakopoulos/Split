@@ -13,6 +13,7 @@ torch.autograd.set_detect_anomaly(True)
 BYTE_CHUNK = 4096
 OUTPUTS_LABELS_RECVD = threading.Event()
 SERVER_OK = threading.Event()
+SERVER_CONTINUE = threading.Event()
 MODEL_LOCK = threading.Lock()
 
 class StrongClient(ClientTemplate):
@@ -27,7 +28,7 @@ class StrongClient(ClientTemplate):
         # Maps a client's id to its socket
         self.clients_id_to_sock = {}
         # Track clients who finished their epoch and transmitted their updated weights
-        self.client_updated_weigts = []
+        self.client_updated_weights = []
         torch.manual_seed(32)
         self.client_model = StrongClientModel()
         torch.manual_seed(32)
@@ -114,7 +115,7 @@ class StrongClient(ClientTemplate):
                 payload = pickle.dumps(payload)
                 if header == 'epoch_weights':
                     print(f'[+] Received end of epoch weights from client {client_id}')
-                    self.client_updated_weigts.append(client_id)
+                    self.client_updated_weights.append(client_id)
 
             query = f'UPDATE weak_clients SET {header} = ? WHERE id = ?'
             self.db.execute_query(query=query, values=(payload, client_id))
@@ -128,12 +129,14 @@ class StrongClient(ClientTemplate):
         data = pickle.loads(data_packet.split(b'<START>')[1].split(b'<END>')[0])
         if data == b'<OK>':
             SERVER_OK.set()
+        elif data == b'<CONTINUE>':
+            SERVER_CONTINUE.set()
         """for header, payload in data:
             # implement different functionality based on headers
             pass"""
         
     def construct_weights_dicts(self):
-        for client_id in self.client_updated_weigts:
+        for client_id in self.client_updated_weights:
             # Fetch both dicts offloaded_weights and epoch_weights
             query = "SELECT offloaded_weights FROM weak_clients WHERE id = ?"
             offload_dict = pickle.loads(self.db.execute_query(query=query, values=(client_id, ), fetch_data_flag=True))
@@ -149,7 +152,7 @@ class StrongClient(ClientTemplate):
     def federated_averaging(self):
         weights = []
         datasizes = []
-        for client_id in self.client_updated_weigts:
+        for client_id in self.client_updated_weights:
             query = "SELECT epoch_weights FROM weak_clients WHERE id = ?"
             weights.append(pickle.loads(self.db.execute_query(query=query, values=(client_id, ), fetch_data_flag=True)))
 
@@ -158,6 +161,10 @@ class StrongClient(ClientTemplate):
 
         weights.append(deepcopy(self.client_model.state_dict()))
         datasizes.append(self.datasize)
+        # Transmit datasizes to server
+        self.client_updated_weights.append(-1)
+        self.send_data_packet(payload={'ids': self.client_updated_weights, 'datasizes': datasizes}, comm_socket=self.client_socket)
+        self.client_updated_weights.remove(-1)
         total_data = sum(datasizes)
         # Aggregate the global model
         avg_full_weights = {}
@@ -174,12 +181,12 @@ class StrongClient(ClientTemplate):
             if layer not in self.offloaded_model.state_dict().keys():
                 avg_weak_weights[layer] = avg_full_weights[layer]
 
-        for client_id in self.client_updated_weigts:
+        for client_id in self.client_updated_weights:
             self.send_data_packet(payload={'avg_model': avg_weak_weights}, comm_socket=self.clients_id_to_sock[client_id])
             print(f"[+] Transmitted average model to client {client_id}")
 
         self.client_model.load_state_dict(avg_full_weights)
-        self.client_updated_weigts.clear()
+        self.client_updated_weights.clear()
         del weights
 
     def train_my_model(self, num_clients, epochs, lr, train_dl):
@@ -189,13 +196,16 @@ class StrongClient(ClientTemplate):
             print(f'[+] Epoch {e + 1}')
             my_loss = self.train_my_model_one_epoch(criterion=criterion, train_dl=train_dl, num_clients=num_clients)
             # wait for all client to transmit their updated end of epoch weights
-            while len(self.client_updated_weigts) < num_clients:
+            while len(self.client_updated_weights) < num_clients:
                 continue
-            self.send_data(data=b"<AVG>", comm_socket=self.client_socket)
+            self.send_data_packet(payload={}, comm_socket=self.client_socket)
             # Reconstruct weight dicts
             self.construct_weights_dicts()
             # Perform the aggregation
             self.federated_averaging()
+            # wait for server to finish its aggregation
+            SERVER_CONTINUE.wait()
+            SERVER_CONTINUE.clear()
 
 
     def train_my_model_one_epoch(self, criterion, train_dl, num_clients):

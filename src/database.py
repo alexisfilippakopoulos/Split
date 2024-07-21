@@ -1,5 +1,7 @@
 import sqlite3
+import threading
 
+DB_LOCK = threading.Lock()
 
 class Database():
     def __init__(self, db_path, table_queries) -> None:
@@ -38,13 +40,14 @@ class Database():
         Returns:
             The data fetched for a specified query. If it is not a retrieval query then None is returned. 
         """
-        try:
-            connection = sqlite3.Connection(self.db_path)
-            cursor = connection.cursor()
-            cursor.execute(query, values) if values is not None else cursor.execute(query)
-            fetched_data = (cursor.fetchall() if fetch_all_flag else cursor.fetchone()[0]) if fetch_data_flag else None
-            connection.commit()
-            connection.close()        
-            return fetched_data
-        except sqlite3.Error as error:
-            print(f'{query} \nFailed with error:\n{error}')
+        with DB_LOCK:
+            try:
+                connection = sqlite3.Connection(self.db_path)
+                cursor = connection.cursor()
+                cursor.execute(query, values) if values is not None else cursor.execute(query)
+                fetched_data = (cursor.fetchall() if fetch_all_flag else cursor.fetchone()[0]) if fetch_data_flag else None
+                connection.commit()
+                connection.close()        
+                return fetched_data
+            except sqlite3.Error as error:
+                print(f'{query} \nFailed with error:\n{error}')
