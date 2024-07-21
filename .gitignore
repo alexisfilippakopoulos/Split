@@ -3,3 +3,4 @@ subset_data/
 __pycache__/
 strong_client.db
 server_db.db
+server_stats.csv

@@ -8,6 +8,7 @@ from copy import deepcopy
 from database import Database
 import torch
 import argparse
+import pandas as pd
 torch.autograd.set_detect_anomaly(True)
 
 BYTE_CHUNK = 4096
@@ -39,6 +40,7 @@ class StrongClient(ClientTemplate):
         self.client_off_outputs = {}
         self.client_labels = {}
         SERVER_OK.set()
+        self.df = pd.DataFrame(columns=['epoch', 'client_id', 'client_side_avg_train_loss'])
 
     def create_server_socket(self):
         # Create a socket that is used for accepting connections and receiving data from weak clients

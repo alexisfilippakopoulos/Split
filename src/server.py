@@ -6,9 +6,12 @@ import argparse
 import torch
 from database import Database
 from server_model import ServerModel
+import pandas as pd
+import numpy as np
 
 
 BYTE_CHUNK = 4096
+EPOCH = 0
 
 class Server():
     def __init__(self, my_ip, my_port, db) -> None:
@@ -22,6 +25,9 @@ class Server():
         self.server_model = ServerModel()
         self.strong_clients = []
         self.ids_to_datasize = {}
+        self.losses = {}
+        self.avg_losses = {}
+        self.df = pd.DataFrame(columns=['epoch', 'client_id', 'avg_train_loss'])
 
 
     def create_server_socket(self):
@@ -74,7 +80,6 @@ class Server():
 
     def update_models(self):
         criterion = torch.nn.CrossEntropyLoss()
-        losses = {}
         for cid in self.client_outputs.keys():
             # Load approprate weights
             query = 'SELECT model_weights FROM clients WHERE id = ?'
@@ -89,7 +94,7 @@ class Server():
             # Backward pass
             loss = criterion(outputs, self.client_labels[cid])
             loss.backward()
-            losses[cid] = loss.item()
+            self.losses[cid] += loss.item()
             #print(f'Client {cid} Loss: {loss.item()}')
             # update
             optimizer.step()
@@ -97,18 +102,24 @@ class Server():
             # store weights
             query = 'UPDATE clients SET model_weights = ? WHERE id = ?'
             self.db.execute_query(query=query, values=(pickle.dumps(self.server_model.state_dict()), cid))
-        print(losses)
+        #print(losses)
         self.client_labels = {}
         self.client_outputs = {}
         self.send_data(data=b'<OK>', comm_socket=self.strong_clients[0])
 
     def federated_averaging(self):
+        global EPOCH
         weights = []
         datasizes = []
         for cid, datasize in self.ids_to_datasize.items():
             query = 'SELECT model_weights FROM clients WHERE id = ?'
             weights.append(self.db.execute_query(query=query, values=(cid, ), fetch_data_flag=True))
             datasizes.append(datasize)
+            avg_loss = self.losses[cid] / np.round(datasize / 32)
+            self.df.loc[len(self.df)] = {'epoch': EPOCH, 'client_id': cid, 'avg_train_loss': avg_loss}
+            self.df.to_csv('server_stats.csv')
+            EPOCH += 1
+            print(f'Client {cid}: Server-Side Average Training Loss: {avg_loss: .2f}')
         total_data = sum(datasizes)
         avg_weights = {}
         for i in range(len(weights)):
@@ -122,6 +133,7 @@ class Server():
         for cid in self.ids_to_datasize.keys():
             query = 'UPDATE clients SET model_weights = ? WHERE id = ?'
             self.db.execute_query(query=query, values=(pickle.dumps(avg_weights), cid))
+            self.losses[cid] = 0
         print('[+] Aggregated Global Model')
         self.send_data(data=b'<CONTINUE>', comm_socket=self.strong_clients[0])
 def create_parser():
@@ -156,7 +168,9 @@ if __name__ == '__main__':
         model_weights = ?
     """
     db.execute_query(query=query, values=(-1, None, pickle.dumps(server.server_model.state_dict()), None, None, pickle.dumps(server.server_model.state_dict())))
+    server.losses[-1] = 0
     for i in range(1, args.num_clients):
+        server.losses[i] = 0
         db.execute_query(query=query, values=(i, None, pickle.dumps(server.server_model.state_dict()), None, None, pickle.dumps(server.server_model.state_dict())))
     server.create_server_socket()
     threading.Thread(target=server.listen_for_connections, args=()).start()
