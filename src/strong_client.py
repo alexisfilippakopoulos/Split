@@ -35,7 +35,7 @@ class StrongClient(ClientTemplate):
         torch.manual_seed(32)
         self.offloaded_model = WeakClientOffloadedModel()
         self.optimizer = torch.optim.SGD(self.client_model.parameters(), lr=0.01)
-        self.client_losses = {}
+        self.client_losses = {-1 : 0.}
         self.client_outputs = {}
         self.client_grads = {}
         self.client_labels = {}
@@ -89,6 +89,7 @@ class StrongClient(ClientTemplate):
         else:
             client_id = exists[0][0]
         self.clients_id_to_sock[client_id] = weak_client_socket
+        self.client_losses[client_id] = 0
         query = "UPDATE weak_clients SET offloaded_weights = ? WHERE id = ?"
         self.db.execute_query(query=query, values=(pickle.dumps(self.offloaded_model.state_dict()), client_id))
         return client_id
@@ -201,6 +202,13 @@ class StrongClient(ClientTemplate):
             # wait for all client to transmit their updated end of epoch weights
             while len(self.client_updated_weights) < num_clients:
                 continue
+            for cid, curr_loss in self.client_losses.items():
+                avg_loss = curr_loss / len(train_dl)
+                print(f'[+] Client ID: {cid} Average Training Loss: {avg_loss: .2f}')
+                self.df.loc[len(self.df)] = {'epoch': e, 'client_id': cid, 'client_side_avg_train_loss': avg_loss}
+                self.client_losses[cid] = 0
+            self.df.to_csv('client_stats.csv')
+            print('LOOOOOOSS', self.client_losses)
             #self.send_data_packet(payload={}, comm_socket=self.client_socket)
             # Reconstruct weight dicts
             self.construct_weights_dicts()
@@ -221,6 +229,7 @@ class StrongClient(ClientTemplate):
             loss.backward()
             self.optimizer.step()
             self.trained_clients += 1
+            self.client_losses[-1] += loss.item()
             self.client_outputs[-1] = server_inputs
             self.client_labels[-1] = labels
             while self.trained_clients < (num_clients + 1):
@@ -230,21 +239,15 @@ class StrongClient(ClientTemplate):
             SERVER_OK.clear()
             self.send_data_packet(payload={'inputs': self.client_outputs, 'labels': self.client_labels}, comm_socket=self.client_socket)
             self.update_models()
-            self.client_outputs = {}
-            self.client_labels = {}
-            self.client_grads = {}
-            self.trained_clients = 0
             del outputs
 
     def update_models(self):
         for cid, gradients in self.client_grads.items():
             self.send_data_packet(payload={'grads': gradients}, comm_socket=self.clients_id_to_sock[cid])
-
-        self.client_losses.clear()
-        self.client_off_outputs = {}
         self.client_outputs = {}
         self.client_labels = {}
-        #print('OUTPUTS', self.client_outputs)
+        self.client_grads = {}
+        self.trained_clients = 0
 
     def forward_pass_offloaded_models(self, client_id):
         # Fetch client's offloaded weights, outputs, labels and store them in a list
@@ -284,6 +287,7 @@ class StrongClient(ClientTemplate):
         self.client_outputs[client_id] = components['outputs']
         self.client_grads[client_id] = components['outputs'].grad.clone().detach()
         self.client_labels[client_id] = components['labels']
+        self.client_losses[client_id] += loss.item()
         self.trained_clients += 1
         
 

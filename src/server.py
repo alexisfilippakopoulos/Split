@@ -27,7 +27,7 @@ class Server():
         self.ids_to_datasize = {}
         self.losses = {}
         self.avg_losses = {}
-        self.df = pd.DataFrame(columns=['epoch', 'client_id', 'avg_train_loss'])
+        self.df = pd.DataFrame(columns=['epoch', 'client_id', 'server_side_avg_train_loss'])
 
     def create_server_socket(self):
         self.server_socket = socket.socket(family=socket.AF_INET, type=socket.SOCK_STREAM)
@@ -115,7 +115,7 @@ class Server():
             weights.append(self.db.execute_query(query=query, values=(cid, ), fetch_data_flag=True))
             datasizes.append(datasize)
             avg_loss = self.losses[cid] / np.round(datasize / 32)
-            self.df.loc[len(self.df)] = {'epoch': EPOCH, 'client_id': cid, 'avg_train_loss': avg_loss}
+            self.df.loc[len(self.df)] = {'epoch': EPOCH, 'client_id': cid, 'server_side_avg_train_loss': avg_loss}
             self.df.to_csv('server_stats.csv')
             EPOCH += 1
             print(f'Client {cid}: Server-Side Average Training Loss: {avg_loss: .2f}')
