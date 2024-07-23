@@ -37,8 +37,9 @@ class StrongClient(ClientTemplate):
         self.optimizer = torch.optim.SGD(self.client_model.parameters(), lr=0.01)
         self.client_losses = {}
         self.client_outputs = {}
-        self.client_off_outputs = {}
+        self.client_grads = {}
         self.client_labels = {}
+        self.trained_clients = 0
         SERVER_OK.set()
         self.df = pd.DataFrame(columns=['epoch', 'client_id', 'client_side_avg_train_loss'])
 
@@ -200,7 +201,7 @@ class StrongClient(ClientTemplate):
             # wait for all client to transmit their updated end of epoch weights
             while len(self.client_updated_weights) < num_clients:
                 continue
-            self.send_data_packet(payload={}, comm_socket=self.client_socket)
+            #self.send_data_packet(payload={}, comm_socket=self.client_socket)
             # Reconstruct weight dicts
             self.construct_weights_dicts()
             # Perform the aggregation
@@ -216,50 +217,28 @@ class StrongClient(ClientTemplate):
             self.optimizer.zero_grad()
             inputs, labels = inputs.to(self.device), labels.to(self.device)
             outputs, server_inputs = self.client_model(inputs)
-            #print('req', outputs.requires_grad)
             loss = criterion(outputs, labels)
-            #outputs.retain_grad()
-            #self.client_losses.append(loss.detach().cpu().numpy())
-            self.client_losses[-1] = loss
-            self.client_off_outputs[-1] = outputs
+            loss.backward()
+            self.optimizer.step()
+            self.trained_clients += 1
             self.client_outputs[-1] = server_inputs
             self.client_labels[-1] = labels
-            while len(self.client_losses) < (num_clients + 1):
+            while self.trained_clients < (num_clients + 1):
                 continue
             #print(f'Transmitted features to client server')
             SERVER_OK.wait()
             SERVER_OK.clear()
             self.send_data_packet(payload={'inputs': self.client_outputs, 'labels': self.client_labels}, comm_socket=self.client_socket)
             self.update_models()
+            self.client_outputs = {}
+            self.client_labels = {}
+            self.client_grads = {}
+            self.trained_clients = 0
             del outputs
 
     def update_models(self):
-        avg_loss = torch.stack(list(self.client_losses.values())).mean()
-        #print(self.client_losses[-1].item(), self.client_losses[1].item(), self.client_losses[2].item())
-        print(self.client_losses[-1].item(), self.client_losses[1].item())
-        #print(avg_loss.item())
-        avg_loss.backward(retain_graph=True)
-        for cid, outputs in self.client_off_outputs.items():
-            if cid == -1:
-                self.optimizer.step()
-            else:
-                new_outs = outputs.clone().detach().requires_grad_(True)
-                query = 'SELECT offloaded_weights FROM weak_clients WHERE id = ?'
-                weight_dict = pickle.loads(self.db.execute_query(query=query, values=(cid, ), fetch_data_flag=True))
-                query = f'SELECT device FROM weak_clients WHERE id = ?'
-                device = self.db.execute_query(query=query, values=(cid, ), fetch_data_flag=True)
-                self.offloaded_model.load_state_dict(weight_dict)
-                optimizer = torch.optim.SGD(self.offloaded_model.parameters(), lr=0.01)
-                optimizer.zero_grad()
-                new_outs.backward(outputs.grad.clone())
-                optimizer.step()
-                #print(outputs.grad.shape)
-                outputs.retain_grad()
-                new_outs.retain_grad()
-                #print(self.client_outputs[cid].grad)
-                #print(f'Transmitted grads to client {cid}')
-                self.send_data_packet(payload={'grads': self.client_outputs[cid].grad.clone().detach().to(device)}, comm_socket=self.clients_id_to_sock[cid])
-                #self.send_data_packet(payload={'grads': outputs.grad.clone().detach().to(device)}, comm_socket=self.clients_id_to_sock[cid])
+        for cid, gradients in self.client_grads.items():
+            self.send_data_packet(payload={'grads': gradients}, comm_socket=self.clients_id_to_sock[cid])
 
         self.client_losses.clear()
         self.client_off_outputs = {}
@@ -284,7 +263,8 @@ class StrongClient(ClientTemplate):
         self.offloaded_model.load_state_dict(components['offloaded_weights'])
         self.offloaded_model.to(self.device)
         self.offloaded_model.train()
-
+        optimizer = torch.optim.SGD(self.offloaded_model.parameters(), lr=0.01)
+        optimizer.zero_grad()
         components['outputs'], components['labels'] = components['outputs'].to(self.device), components['labels'].to(self.device)
         #components['outputs'] = components['outputs'].clone().detach().requires_grad_(True)
         #components['outputs'].retain_grad() if components['device'] != self.device else None
@@ -292,15 +272,20 @@ class StrongClient(ClientTemplate):
         outputs = self.offloaded_model(components['outputs'])
         #self.client_losses.append(loss.detach().cpu().numpy())
         #print(components['outputs'].requires_grad_())
-        components['outputs'].retain_grad()
+        components['outputs'].requires_grad_(True)
         outputs.retain_grad()
+        loss = criterion(outputs, components['labels'])
+        loss.backward()
+        print(f'ID: {client_id}, Loss: {loss.item() :.2f}')
+        optimizer.step()
+        #self.send_data_packet(payload={'grads': components['outputs'].grad.clone().detach().to(components['device'])}, comm_socket=self.clients_id_to_sock[client_id])
         #outputs = outputs.clone().detach().requires_grad_(True)
         #self.client_outputs[client_id] = components['outputs'].clone().detach().requires_grad_(True)
         self.client_outputs[client_id] = components['outputs']
-        self.client_off_outputs[client_id] = outputs
-        loss = criterion(outputs, components['labels'])
-        self.client_losses[client_id] = loss
+        self.client_grads[client_id] = components['outputs'].grad.clone().detach()
         self.client_labels[client_id] = components['labels']
+        self.trained_clients += 1
+        
 
             
 def create_parser():

@@ -29,7 +29,6 @@ class Server():
         self.avg_losses = {}
         self.df = pd.DataFrame(columns=['epoch', 'client_id', 'avg_train_loss'])
 
-
     def create_server_socket(self):
         self.server_socket = socket.socket(family=socket.AF_INET, type=socket.SOCK_STREAM)
         self.server_socket.bind((self.server_ip, self.server_port))
@@ -44,7 +43,7 @@ class Server():
             threading.Thread(target=self.listen_for_messages, args=(client_socket, client_address)).start()
 
     def handle_connections(self):
-         pass
+        pass
     # todo implement handle connections and  call it from listen for conns
 
     def listen_for_messages(self, client_socket, client_address):
@@ -95,7 +94,7 @@ class Server():
             loss = criterion(outputs, self.client_labels[cid])
             loss.backward()
             self.losses[cid] += loss.item()
-            #print(f'Client {cid} Loss: {loss.item()}')
+            print(f'Client {cid} Loss: {loss.item()}')
             # update
             optimizer.step()
             #print(f'Updated with client {cid} model instance')
