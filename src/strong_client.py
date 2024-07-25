@@ -153,7 +153,7 @@ class StrongClient(ClientTemplate):
             self.db.execute_query(query=query, values=(pickle.dumps(weak_model_dict), client_id))
         print("[+] Constructed all weak clients' weight dict")
 
-    def federated_averaging(self):
+    def federated_averaging(self, epoch):
         weights = []
         datasizes = []
         for client_id in self.client_updated_weights:
@@ -186,11 +186,14 @@ class StrongClient(ClientTemplate):
                 avg_weak_weights[layer] = avg_full_weights[layer]
 
         for client_id in self.client_updated_weights:
+            query = "UPDATE weak_clients SET model_weights = ? WHERE id = ?"
+            self.db.execute_query(query=query, values=(pickle.dumps(avg_weak_weights), client_id))
             self.send_data_packet(payload={'avg_model': avg_weak_weights}, comm_socket=self.clients_id_to_sock[client_id])
             print(f"[+] Transmitted average model to client {client_id}")
 
         self.client_model.load_state_dict(avg_full_weights)
         self.client_updated_weights.clear()
+        torch.save(avg_full_weights, f'models/client/model_{epoch}.pth')
         del weights
 
     def train_my_model(self, num_clients, epochs, lr, train_dl):
@@ -213,7 +216,7 @@ class StrongClient(ClientTemplate):
             # Reconstruct weight dicts
             self.construct_weights_dicts()
             # Perform the aggregation
-            self.federated_averaging()
+            self.federated_averaging(e)
             # wait for server to finish its aggregation
             SERVER_CONTINUE.wait()
             SERVER_CONTINUE.clear()
@@ -323,7 +326,8 @@ if __name__ == '__main__':
                         labels BLOB,
                         loss BLOB,
                         offloaded_weights BLOB,
-                        epoch_weights BLOB)
+                        epoch_weights BLOB,
+                        model_weights BLOB)
                         """,
     }
     db = Database(db_path='strong_client.db', table_queries=table_queries)

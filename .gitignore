@@ -4,3 +4,5 @@ __pycache__/
 strong_client.db
 server_db.db
 server_stats.csv
+pract.ipynb
+models/

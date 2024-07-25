@@ -117,7 +117,6 @@ class Server():
             avg_loss = self.losses[cid] / np.round(datasize / 32)
             self.df.loc[len(self.df)] = {'epoch': EPOCH, 'client_id': cid, 'server_side_avg_train_loss': avg_loss}
             self.df.to_csv('server_stats.csv')
-            EPOCH += 1
             print(f'Client {cid}: Server-Side Average Training Loss: {avg_loss: .2f}')
         total_data = sum(datasizes)
         avg_weights = {}
@@ -135,6 +134,10 @@ class Server():
             self.losses[cid] = 0
         print('[+] Aggregated Global Model')
         self.send_data(data=b'<CONTINUE>', comm_socket=self.strong_clients[0])
+        torch.save(avg_weights, f'models/server/model_{EPOCH}.pth')
+        EPOCH += 1
+
+
 def create_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument('-ip', '--ip', default='127.0.0.1', help='ip of current machine', type=str)     
