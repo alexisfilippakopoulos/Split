@@ -4,9 +4,13 @@ from torchvision import datasets, transforms
 import os
 
 
-def get_data(transform):
-    train_data = datasets.CIFAR10(root='data/', train=True, download=True, transform=transform)
-    test_data = datasets.CIFAR10(root='data/', train=False, download=True, transform=transform)
+def get_data(transform, cifar_flag):
+    if cifar_flag:
+        train_data = datasets.CIFAR10(root='data/', train=True, download=True, transform=transform)
+        test_data = datasets.CIFAR10(root='data/', train=False, download=True, transform=transform)
+    else:
+        train_data = datasets.FashionMNIST(root='data/', train=True, download=True, transform=transform)
+        test_data = datasets.FashionMNIST(root='data/', train=False, download=True, transform=transform)
     return train_data, test_data
 
 def sort_dataset(data):
@@ -47,10 +51,10 @@ if __name__ == '__main__':
         os.makedirs('models/client')
     if not os.path.exists('models/server'):
         os.makedirs('models/server')
-    #transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+    transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
     # AlexNet tranformations
-    transform = transforms.Compose([transforms.Resize((224, 224)), transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
-    train_data, test_data = get_data(transform=transform)
+    #transform = transforms.Compose([transforms.Resize((224, 224)), transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+    train_data, test_data = get_data(transform=transform, cifar_flag=False)
     class_to_indices = sort_dataset(data=train_data)
     '''create_subset(data=train_data, class_to_indices=class_to_indices, classes=[0, 1], path='subset_data/sub_01.pth')
     create_subset(data=train_data, class_to_indices=class_to_indices, classes=[2, 3], path='subset_data/sub_23.pth')
