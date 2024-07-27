@@ -107,6 +107,7 @@ class Server():
         self.send_data(data=b'<OK>', comm_socket=self.strong_clients[0])
 
     def federated_averaging(self):
+        print('[+] FedAvging')
         global EPOCH
         weights = []
         datasizes = []

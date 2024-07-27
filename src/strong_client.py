@@ -120,7 +120,6 @@ class StrongClient(ClientTemplate):
                 if header == 'epoch_weights':
                     print(f'[+] Received end of epoch weights from client {client_id}')
                     self.client_updated_weights.append(client_id)
-
             query = f'UPDATE weak_clients SET {header} = ? WHERE id = ?'
             self.db.execute_query(query=query, values=(payload, client_id))
 
@@ -154,6 +153,7 @@ class StrongClient(ClientTemplate):
         print("[+] Constructed all weak clients' weight dict")
 
     def federated_averaging(self, epoch):
+        print(f'[+] FedAvg for epoch {epoch + 1}')
         weights = []
         datasizes = []
         for client_id in self.client_updated_weights:
@@ -196,7 +196,7 @@ class StrongClient(ClientTemplate):
         torch.save(avg_full_weights, f'models/client/model_{epoch}.pth')
         del weights
 
-    def train_my_model(self, num_clients, epochs, lr, train_dl):
+    def train_my_model(self, num_clients, epochs, fedavg, train_dl):
         criterion = torch.nn.CrossEntropyLoss()
         self.client_model.to(self.device)
         for e in range(epochs):
@@ -211,12 +211,20 @@ class StrongClient(ClientTemplate):
                 self.df.loc[len(self.df)] = {'epoch': e, 'client_id': cid, 'client_side_avg_train_loss': avg_loss}
                 self.client_losses[cid] = 0
             self.df.to_csv('client_stats.csv')
-            print('LOOOOOOSS', self.client_losses)
-            #self.send_data_packet(payload={}, comm_socket=self.client_socket)
-            # Reconstruct weight dicts
-            self.construct_weights_dicts()
-            # Perform the aggregation
-            self.federated_averaging(e)
+            if (e + 1) % fedavg == 0:
+                # Reconstruct weight dicts
+                self.construct_weights_dicts()
+                # Perform the aggregation
+                self.federated_averaging(e)
+            else:
+                datasizes = []
+                for client_id in self.client_updated_weights:
+                    query = "SELECT datasize FROM weak_clients WHERE id = ?"
+                    datasizes.append(self.db.execute_query(query=query, values=(client_id, ), fetch_data_flag=True))
+                datasizes.append(self.datasize)
+                self.client_updated_weights.append(-1)
+                self.send_data_packet(payload={'ids': self.client_updated_weights, 'datasizes': datasizes}, comm_socket=self.client_socket)
+                self.client_updated_weights.clear()
             # wait for server to finish its aggregation
             SERVER_CONTINUE.wait()
             SERVER_CONTINUE.clear()
@@ -230,6 +238,7 @@ class StrongClient(ClientTemplate):
             outputs, server_inputs = self.client_model(inputs)
             loss = criterion(outputs, labels)
             loss.backward()
+            print(f'My loss: {loss.item() : .2f}')
             self.optimizer.step()
             self.trained_clients += 1
             self.client_losses[-1] += loss.item()
@@ -307,7 +316,8 @@ def create_parser():
     parser.add_argument('-bs', '--batchsize', help='size of batch', type=int) 
     parser.add_argument('-e', '--epochs', help='number of epochs', type=int)
     parser.add_argument('-lr', '--learningrate', help='learning rate', type=float)
-    parser.add_argument('-numcl', '--num_clients', help='number of clients that will be served', type=int)   
+    parser.add_argument('-numcl', '--num_clients', help='number of clients that will be served', type=int)
+    parser.add_argument('-fed', '--fedavg', help='number of clients that will be served', type=int)   
     return parser    
 
 
@@ -344,5 +354,5 @@ if __name__ == '__main__':
     threading.Thread(target=strong_client.listen_for_client_sock_messages, args=()).start()
     #strong_client.send_data_packet('hiiii server', strong_client.client_socket)
     train_dl = strong_client.load_data(subset_path=args.datapath, batch_size=32, shuffle=True, num_workers=2)
-    threading.Thread(target=strong_client.train_my_model, args=(args.num_clients, args.epochs, args.learningrate, train_dl)).start()
+    threading.Thread(target=strong_client.train_my_model, args=(args.num_clients, args.epochs, args.fedavg, train_dl)).start()
     

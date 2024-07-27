@@ -47,9 +47,9 @@ if __name__ == '__main__':
         os.makedirs('models/client')
     if not os.path.exists('models/server'):
         os.makedirs('models/server')
-    transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+    #transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
     # AlexNet tranformations
-    #transform = transforms.Compose([transforms.Resize((224, 224))transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+    transform = transforms.Compose([transforms.Resize((224, 224)), transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
     train_data, test_data = get_data(transform=transform)
     class_to_indices = sort_dataset(data=train_data)
     '''create_subset(data=train_data, class_to_indices=class_to_indices, classes=[0, 1], path='subset_data/sub_01.pth')

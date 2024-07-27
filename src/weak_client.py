@@ -45,7 +45,7 @@ class WeakClient(ClientTemplate):
         raise NotImplementedError("Subclasses should implement this method")
         # Implement different functionality
 
-    def train(self, epochs, train_dl, optimizer):
+    def train(self, epochs, train_dl, optimizer, fedavg):
         self.client_model.train()
         self.client_model.to(self.device)
         for e in range(epochs):
@@ -55,7 +55,6 @@ class WeakClient(ClientTemplate):
                 optimizer.zero_grad()
                 outputs = self.client_model(inputs)
                 weak_client_outputs = outputs.clone().detach().requires_grad_(True)
-
                 self.send_data_packet(payload={'outputs': weak_client_outputs.requires_grad_(True), 'labels': labels}, comm_socket=self.client_socket)
 
                 GRADS_RECVD.wait()
@@ -64,12 +63,14 @@ class WeakClient(ClientTemplate):
                 outputs.backward(self.grads)
                 optimizer.step()
                 #print('took a step')
-            
+                
             self.send_data_packet(payload={'epoch_weights': self.client_model.state_dict()}, comm_socket=self.client_socket)
             print(f'\tAverage Training Loss: {(self.curr_loss / len(train_dl)) :.2f}')
             self.curr_loss = 0
-            AVG_MODEL_RECVD.wait()
-            AVG_MODEL_RECVD.clear()
+            if (e + 1) % fedavg == 0:
+                AVG_MODEL_RECVD.wait()
+                AVG_MODEL_RECVD.clear()
+            time.sleep(1)
 
 
 def create_parser():
@@ -82,7 +83,8 @@ def create_parser():
     parser.add_argument('-data', '--datapath', help='path to a data subset', type=str)
     parser.add_argument('-bs', '--batchsize', help='size of batch', type=int) 
     parser.add_argument('-e', '--epochs', help='number of epochs', type=int)
-    parser.add_argument('-lr', '--learningrate', help='learning rate', type=float)  
+    parser.add_argument('-lr', '--learningrate', help='learning rate', type=float)
+    parser.add_argument('-fed', '--fedavg', help='number of epochs', type=int)
     return parser   
 
 
@@ -101,4 +103,4 @@ if __name__ == '__main__':
 
     optimizer = torch.optim.SGD(params=weak_client.client_model.parameters(), lr=args.learningrate)
     
-    weak_client.train(epochs=args.epochs, train_dl=train_dl, optimizer=optimizer)
+    weak_client.train(epochs=args.epochs, train_dl=train_dl, optimizer=optimizer, fedavg=args.fedavg)
