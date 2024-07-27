@@ -5,6 +5,7 @@ import argparse
 import threading
 import time
 from client_model import WeakClientModel
+from models import AlexNetWeakClientModel
 import torch
 
 BYTE_CHUNK = 4096
@@ -19,8 +20,8 @@ class WeakClient(ClientTemplate):
         self.my_port = my_port
         self.ip_to_conn = ip_to_conn
         self.port_to_conn = port_to_conn
-        torch.manual_seed(32)
-        self.client_model = WeakClientModel()
+        torch.manual_seed(42)
+        self.client_model = AlexNetWeakClientModel()
         self.event_dict = {}
         self.grads = None
         self.curr_loss = 0
@@ -62,6 +63,7 @@ class WeakClient(ClientTemplate):
                 #print(self.grads)
                 outputs.backward(self.grads)
                 optimizer.step()
+                time.sleep(1)
                 #print('took a step')
                 
             self.send_data_packet(payload={'epoch_weights': self.client_model.state_dict()}, comm_socket=self.client_socket)
@@ -100,7 +102,7 @@ if __name__ == '__main__':
     #weak_client.device = torch.device('cpu')
     train_dl = weak_client.load_data(subset_path=args.datapath, batch_size=args.batchsize, shuffle=True, num_workers=2)
     weak_client.send_data_packet(payload={'device': weak_client.device, 'datasize': weak_client.datasize}, comm_socket=weak_client.client_socket)
-
+    time.sleep(2)
     optimizer = torch.optim.SGD(params=weak_client.client_model.parameters(), lr=args.learningrate)
     
     weak_client.train(epochs=args.epochs, train_dl=train_dl, optimizer=optimizer, fedavg=args.fedavg)

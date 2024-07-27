@@ -6,6 +6,7 @@ import argparse
 import torch
 from database import Database
 from server_model import ServerModel
+from models import AlexNetServer
 import pandas as pd
 import numpy as np
 
@@ -22,7 +23,7 @@ class Server():
         self.client_outputs = {}
         self.client_labels = {}
         torch.manual_seed(32)
-        self.server_model = ServerModel()
+        self.server_model = AlexNetServer()
         self.strong_clients = []
         self.ids_to_datasize = {}
         self.losses = {}
@@ -163,7 +164,7 @@ if __name__ == '__main__':
                         """,
     }
     db = Database(db_path='server_db.db', table_queries=table_queries)
-    server = Server(my_ip='localhost', my_port=10000, db=db)
+    server = Server(my_ip=args.ip, my_port=args.serverport, db=db)
     query = """
     INSERT INTO clients (id, datasize, model_weights, outputs, labels)
     VALUES (?, ?, ?, ?, ?)

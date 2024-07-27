@@ -5,9 +5,9 @@ track performance
 
 conda activate split_env
 
-python src/server.py --ip=127.0.0.1 --serverport=10000 --device=cuda --epochs=20 --learningrate=0.01 --num_clients=3
+python src/server.py --ip=127.0.0.1 --serverport=11000 --device=cuda --epochs=20 --learningrate=0.01 --num_clients=3
 
-python src/strong_client.py -ip=127.0.0.1 --clientport=9999 --serverport=6969 --ip2connect=127.0.0.1 --port2connect=10000 --device=cuda --datapath=subset_data/sub_0.pth --batchsize=32 --epochs=20 --learningrate=0.01 --num_clients=2 --fedavg=2
+python src/strong_client.py -ip=127.0.0.1 --clientport=9999 --serverport=6969 --ip2connect=127.0.0.1 --port2connect=11000 --device=cuda --datapath=subset_data/sub_0.pth --batchsize=32 --epochs=20 --learningrate=0.01 --num_clients=2 --fedavg=2
 
 python src/weak_client.py -ip=127.0.0.1 --clientport=9998 --ip2connect=127.0.0.1 --port2connect=6969 --device=cuda --datapath=subset_data/sub_1.pth --batchsize=32 --epochs=20 --learningrate=0.01 --fedavg=2
 

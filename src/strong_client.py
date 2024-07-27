@@ -1,5 +1,6 @@
 from client import ClientTemplate
 from client_model import WeakClientOffloadedModel, StrongClientModel
+from models import AlexNetStrongClientModel, AlexNetWeakClientOffloadedModel
 import pickle
 import socket
 import sys
@@ -30,10 +31,10 @@ class StrongClient(ClientTemplate):
         self.clients_id_to_sock = {}
         # Track clients who finished their epoch and transmitted their updated weights
         self.client_updated_weights = []
-        torch.manual_seed(32)
-        self.client_model = StrongClientModel()
-        torch.manual_seed(32)
-        self.offloaded_model = WeakClientOffloadedModel()
+        torch.manual_seed(42)
+        self.client_model = AlexNetStrongClientModel()
+        torch.manual_seed(42)
+        self.offloaded_model = AlexNetWeakClientOffloadedModel()
         self.optimizer = torch.optim.SGD(self.client_model.parameters(), lr=0.01)
         self.client_losses = {-1 : 0.}
         self.client_outputs = {}
@@ -284,7 +285,7 @@ class StrongClient(ClientTemplate):
         #components['outputs'] = components['outputs'].clone().detach().requires_grad_(True)
         #components['outputs'].retain_grad() if components['device'] != self.device else None
         # Perform the forward and backward pass
-        outputs = self.offloaded_model(components['outputs'])
+        outputs, server_inputs = self.offloaded_model(components['outputs'])
         #self.client_losses.append(loss.detach().cpu().numpy())
         #print(components['outputs'].requires_grad_())
         components['outputs'].requires_grad_(True)
@@ -296,7 +297,7 @@ class StrongClient(ClientTemplate):
         #self.send_data_packet(payload={'grads': components['outputs'].grad.clone().detach().to(components['device'])}, comm_socket=self.clients_id_to_sock[client_id])
         #outputs = outputs.clone().detach().requires_grad_(True)
         #self.client_outputs[client_id] = components['outputs'].clone().detach().requires_grad_(True)
-        self.client_outputs[client_id] = components['outputs']
+        self.client_outputs[client_id] = server_inputs
         self.client_grads[client_id] = components['outputs'].grad.clone().detach()
         self.client_labels[client_id] = components['labels']
         self.client_losses[client_id] += loss.item()
@@ -353,6 +354,6 @@ if __name__ == '__main__':
     # Thread for establishing communication with the server
     threading.Thread(target=strong_client.listen_for_client_sock_messages, args=()).start()
     #strong_client.send_data_packet('hiiii server', strong_client.client_socket)
-    train_dl = strong_client.load_data(subset_path=args.datapath, batch_size=32, shuffle=True, num_workers=2)
+    train_dl = strong_client.load_data(subset_path=args.datapath, batch_size=args.batchsize, shuffle=True, num_workers=2)
     threading.Thread(target=strong_client.train_my_model, args=(args.num_clients, args.epochs, args.fedavg, train_dl)).start()
     
